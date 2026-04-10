@@ -1,0 +1,7 @@
+project = "axrlen-trading"
+service = "trading-bot"
+
+[build]
+dockerfilePath = "Dockerfile"
+
+deploy = { startCommand = "python main.py run" }
