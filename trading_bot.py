@@ -56,60 +56,48 @@ class HyperliquidClient:
         """Create EIP712 signature for Hyperliquid using Ethereum private key"""
         try:
             from eth_account import Account
-            from eth_account.messages import encode_typed_data
+            from eth_account.messages import encode_structured_data
 
-            # Convert API secret to private key (assuming it's hex format)
             private_key = self.api_secret
             if not private_key.startswith('0x'):
                 private_key = '0x' + private_key
 
-            # EIP712 domain
-            domain_data = {
-                "name": "Exchange",
-                "version": "1",
-                "chainId": 1337,
-                "verifyingContract": "0x0000000000000000000000000000000000000000"
-            }
-
-            # Message types
-            types = {
-                "EIP712Domain": [
-                    {"name": "name", "type": "string"},
-                    {"name": "version", "type": "string"},
-                    {"name": "chainId", "type": "uint256"},
-                    {"name": "verifyingContract", "type": "address"}
-                ],
-                "Agent": [
-                    {"name": "source", "type": "string"},
-                    {"name": "connectionId", "type": "bytes32"}
-                ]
-            }
-
-            # Create connection ID from API key and nonce
-            import hashlib
-            connection_id = hashlib.sha256(f"{self.api_key}:{nonce}".encode()).hexdigest()
-
-            # Message data
-            message_data = {
-                "source": "trading_bot",
-                "connectionId": connection_id
+            # EIP712 domain and message structure
+            full_message = {
+                "domain": {
+                    "name": "Exchange",
+                    "version": "1",
+                    "chainId": 1337,
+                    "verifyingContract": "0x0000000000000000000000000000000000000000",
+                },
+                "types": {
+                    "EIP712Domain": [
+                        {"name": "name", "type": "string"},
+                        {"name": "version", "type": "string"},
+                        {"name": "chainId", "type": "uint256"},
+                        {"name": "verifyingContract", "type": "address"},
+                    ],
+                    "Agent": [
+                        {"name": "source", "type": "string"},
+                        {"name": "connectionId", "type": "bytes32"},
+                    ],
+                },
+                "primaryType": "Agent",
+                "message": {
+                    "source": "trading_bot",
+                    "connectionId": f"0x{hashlib.sha256(f'{self.api_key}:{nonce}'.encode()).hexdigest()}",
+                },
             }
 
             # Encode and sign
-            typed_data = {
-                "types": types,
-                "primaryType": "Agent",
-                "domain": domain_data,
-                "message": message_data
-            }
-
-            encoded_message = encode_typed_data(typed_data)
-            signed_message = Account.sign_message(encoded_message, private_key)
+            signed_message = Account.sign_message(
+                encode_structured_data(primitive=full_message), private_key
+            )
 
             return {
                 "r": hex(signed_message.r),
                 "s": hex(signed_message.s),
-                "v": signed_message.v
+                "v": signed_message.v,
             }
 
         except Exception as e:
@@ -118,7 +106,7 @@ class HyperliquidClient:
             return {
                 "r": "0x53749d5b30552aeb2fca34b530185976545bb22d0b3ce6f62e31be961a59298",
                 "s": "0x755c40ba9bf05223521753995abb2f73ab3229be8ec921f350cb447e384d8ed8",
-                "v": 27
+                "v": 27,
             }
 
     def fetch_history(self, symbol: str = MARKET_SYMBOL, limit: int = 300) -> dict:
@@ -204,11 +192,14 @@ class HyperliquidClient:
             response.raise_for_status()
             result = response.json()
 
+            if not isinstance(result, dict):
+                raise ValueError(f"Unexpected API response: {result}")
+
             leveraged_size = size_usd * leverage
             logger.info(f"LIVE ORDER PLACED: {side} ${leveraged_size:.2f} ({leverage}x leveraged) of {MARKET_SYMBOL}")
 
             return {
-                "order_id": result.get("response", {}).get("data", {}).get("statuses", [{}])[0].get("id", f"live_{idempotency_key or str(uuid.uuid4())[:8]}"),
+                "order_id": result.get("response", {}).get("data", {}).get("statuses", [{}])[0].get("oid", f"live_{idempotency_key or str(uuid.uuid4())[:8]}"),
                 "status": "placed",
                 "symbol": MARKET_SYMBOL,
                 "side": side,
@@ -266,6 +257,8 @@ class HyperliquidClient:
 
         except Exception as e:
             logger.error(f"Failed to get positions: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response body: {e.response.text}")
             return {"positions": []}
 
     def close_position(self, position_id: str) -> dict:
