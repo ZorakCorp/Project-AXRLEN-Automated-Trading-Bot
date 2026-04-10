@@ -1,5 +1,14 @@
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txtpandas
+COPY requirements.txt ./pandas
+numpy
+scikit-learn
+python-dotenv
+requests
+websockets
+joblib
+kerykeion
+ecdsa
+eth-account>=0.11.0
+websocket-client
 numpy
 scikit-learn
 python-dotenv
