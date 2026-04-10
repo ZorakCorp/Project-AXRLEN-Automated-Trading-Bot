@@ -24,6 +24,8 @@ from hyperliquid_ws_client import HyperliquidWebSocketClient
 from raw_data_engine import RawDataIngestion
 from signal_engine import RiskEngine, run_probability
 
+logger = logging.getLogger(__name__)
+
 
 class HyperliquidClient:
     def __init__(self):
