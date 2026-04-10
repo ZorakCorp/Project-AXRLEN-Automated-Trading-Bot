@@ -9,15 +9,6 @@ kerykeion
 ecdsa
 eth-account>=0.11.0
 websocket-client
-numpy
-scikit-learn
-python-dotenv
-requests
-websockets
-joblib
-kerykeion
-ecdsa
-eth-account>=0.11.0
 websocket-client
 numpy
 scikit-learn
