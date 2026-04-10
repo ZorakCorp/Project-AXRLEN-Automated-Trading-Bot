@@ -46,7 +46,7 @@ class GeminiClient:
 
     def call(self, system_prompt: str, user_message: str, model: Optional[str] = None, timeout: int = 30) -> Any:
         model_name = model or self.model
-        endpoint = f"{self.base_url}/models/{model_name}/generateContent?key={self.api_key}"
+        endpoint = f"{self.base_url}/models/{model_name}:generateContent?key={self.api_key}"
         payload = {
             "contents": [
                 {
