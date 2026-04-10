@@ -8,3 +8,4 @@ joblib
 kerykeion
 ecdsa
 eth-account
+websocket-client
