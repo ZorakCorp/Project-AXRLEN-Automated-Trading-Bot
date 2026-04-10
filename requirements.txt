@@ -1,4 +1,5 @@
-pandas
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txtpandas
 numpy
 scikit-learn
 python-dotenv
