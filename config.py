@@ -3,6 +3,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def _normalize_base_url(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    # Users often paste ".../v1" from docs; this project constructs "/exchange" and "/info" paths.
+    # Normalize to the host root to avoid double "/v1/exchange" style paths.
+    if url.endswith("/v1"):
+        url = url[: -len("/v1")]
+    return url
+
+
 HYPERLIQUID_API_KEY = os.getenv("HYPERLIQUID_API_KEY", "")
 HYPERLIQUID_API_SECRET = os.getenv("HYPERLIQUID_API_SECRET", "")
 HYPERLIQUID_WALLET_ADDRESS = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
@@ -12,7 +21,7 @@ GEMINI_API_MODEL = os.getenv("GEMINI_API_MODEL", "gemini-1.5-flash")
 MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "BRENTUSD")
 CAPITAL_USD = float(os.getenv("CAPITAL_USD", "100000"))
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
-HYPERLIQUID_API_BASE = os.getenv("HYPERLIQUID_API_BASE", "https://api.hyperliquid.xyz")
+HYPERLIQUID_API_BASE = _normalize_base_url(os.getenv("HYPERLIQUID_API_BASE", "https://api.hyperliquid.xyz"))
 
 # Safety controls
 LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
@@ -34,8 +43,10 @@ HYPERLIQUID_EXECUTION_VERIFIED = os.getenv("HYPERLIQUID_EXECUTION_VERIFIED", "fa
 }
 
 # Default TP/SL bounds (percent of price)
-DEFAULT_TAKE_PROFIT_PCT = float(os.getenv("DEFAULT_TAKE_PROFIT_PCT", "0.5"))
-DEFAULT_STOP_LOSS_PCT = float(os.getenv("DEFAULT_STOP_LOSS_PCT", "0.3"))
+# Backwards compatible aliases:
+# - TP_PERCENT / SL_PERCENT (older configs)
+DEFAULT_TAKE_PROFIT_PCT = float(os.getenv("DEFAULT_TAKE_PROFIT_PCT", os.getenv("TP_PERCENT", "0.5")))
+DEFAULT_STOP_LOSS_PCT = float(os.getenv("DEFAULT_STOP_LOSS_PCT", os.getenv("SL_PERCENT", "0.3")))
 
 # OANDA (optional / not used by main entrypoint)
 OANDA_API_KEY = os.getenv("OANDA_API_KEY", "")

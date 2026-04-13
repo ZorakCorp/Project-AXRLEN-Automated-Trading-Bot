@@ -45,7 +45,9 @@ class HyperliquidClient:
         self.wallet_address = HYPERLIQUID_WALLET_ADDRESS
         self.base_url = f"{HYPERLIQUID_API_BASE}/exchange"
         self.info_url = f"{HYPERLIQUID_API_BASE}/info"
-        validate_hyperliquid_config()
+        # Allow dry-run execution without secrets to make local/dev testing safe.
+        if LIVE_TRADING:
+            validate_hyperliquid_config()
         self._session = self._build_session()
 
         # Asset ID mapping (ETH = 4, BTC = 1, etc.)
@@ -295,6 +297,8 @@ class HyperliquidClient:
 
     def get_positions(self) -> dict:
         """Get user positions via REST API"""
+        if not LIVE_TRADING:
+            return {"positions": []}
         try:
             payload = {
                 "type": "userState",
@@ -329,6 +333,8 @@ class HyperliquidClient:
 
     def close_position(self, position_id: str) -> dict:
         """Close position via REST API"""
+        if not LIVE_TRADING:
+            return {"status": "dry_run", "position_id": position_id}
         try:
             # Parse position details from ID
             # This is a simplified implementation
