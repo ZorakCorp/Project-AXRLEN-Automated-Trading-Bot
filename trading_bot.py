@@ -1,6 +1,4 @@
 import hashlib
-import hmac
-import json
 import logging
 import time
 import uuid
@@ -13,6 +11,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from eth_account import Account
 from ai_model import PredictionModel
 from config import (
     CAPITAL_USD,
@@ -37,25 +36,41 @@ from state_store import append_jsonl, load_json, save_json
 
 logger = logging.getLogger(__name__)
 
+try:
+    from hyperliquid.exchange import Exchange
+    from hyperliquid.info import Info
+except Exception:
+    Exchange = None  # type: ignore
+    Info = None  # type: ignore
+
 
 class HyperliquidClient:
     def __init__(self):
         self.api_key = HYPERLIQUID_API_KEY
         self.api_secret = HYPERLIQUID_API_SECRET
         self.wallet_address = HYPERLIQUID_WALLET_ADDRESS
-        self.base_url = f"{HYPERLIQUID_API_BASE}/exchange"
-        self.info_url = f"{HYPERLIQUID_API_BASE}/info"
         # Allow dry-run execution without secrets to make local/dev testing safe.
         if LIVE_TRADING:
             validate_hyperliquid_config()
+            if Exchange is None or Info is None:
+                raise RuntimeError(
+                    "hyperliquid-python-sdk is required for LIVE_TRADING. Install it (pip install hyperliquid-python-sdk)."
+                )
         self._session = self._build_session()
 
-        # Asset ID mapping (ETH = 4, BTC = 1, etc.)
-        self.asset_ids = {
-            "ETH": 4,
-            "BTC": 1,
-            "BRENTUSD": 99999,  # Placeholder - Hyperliquid doesn't support commodities
-        }
+        self.info = None
+        self.exchange = None
+        if Info is not None:
+            # skip_ws=True to avoid background threads in the bot loop
+            self.info = Info(HYPERLIQUID_API_BASE, skip_ws=True, timeout=10.0)
+        if LIVE_TRADING and Exchange is not None:
+            wallet = Account.from_key(self.api_secret)
+            self.exchange = Exchange(
+                wallet=wallet,
+                base_url=HYPERLIQUID_API_BASE,
+                account_address=self.wallet_address,
+                timeout=10.0,
+            )
 
     @staticmethod
     def _build_session() -> requests.Session:
@@ -74,99 +89,54 @@ class HyperliquidClient:
         session.mount("http://", HTTPAdapter(max_retries=retry))
         return session
 
-    def _get_asset_id(self, symbol: str) -> int:
-        """Get asset ID for symbol"""
-        if symbol in self.asset_ids:
-            return self.asset_ids[symbol]
-        raise ValueError(f"Unsupported MARKET_SYMBOL={symbol}. Supported: {sorted(self.asset_ids.keys())}")
-
     def validate_tradable_symbol(self) -> None:
-        asset_id = self.asset_ids.get(MARKET_SYMBOL)
-        if asset_id is None:
-            raise ValueError(f"Unsupported MARKET_SYMBOL={MARKET_SYMBOL}. Supported: {sorted(self.asset_ids.keys())}")
-        if LIVE_TRADING and (MARKET_SYMBOL == "BRENTUSD" or asset_id == 99999):
-            raise RuntimeError(
-                "Refusing LIVE_TRADING: MARKET_SYMBOL=BRENTUSD is configured as a placeholder and is not tradable on Hyperliquid."
-            )
+        if self.info is None:
+            if LIVE_TRADING:
+                raise RuntimeError("Hyperliquid Info client not available in LIVE_TRADING mode.")
+            return
+        try:
+            _ = self.info.name_to_asset(MARKET_SYMBOL)
+        except Exception as e:
+            raise ValueError(f"Unsupported MARKET_SYMBOL={MARKET_SYMBOL} for Hyperliquid.") from e
         if LIVE_TRADING and not HYPERLIQUID_EXECUTION_VERIFIED:
             raise RuntimeError(
                 "Refusing LIVE_TRADING: Hyperliquid execution in this repo is not verified. "
                 "After you confirm signing/order formats against official docs, set HYPERLIQUID_EXECUTION_VERIFIED=true."
             )
 
-    def _sign_eip712(self, action: dict, nonce: int) -> dict:
-        """Create EIP712 signature for Hyperliquid using Ethereum private key"""
-        try:
-            from eth_account import Account
-            from eth_account.messages import encode_structured_data
-
-            private_key = self.api_secret
-            if not private_key.startswith('0x'):
-                private_key = '0x' + private_key
-
-            # EIP712 domain and message structure
-            full_message = {
-                "domain": {
-                    "name": "Exchange",
-                    "version": "1",
-                    "chainId": 1337,
-                    "verifyingContract": "0x0000000000000000000000000000000000000000",
-                },
-                "types": {
-                    "EIP712Domain": [
-                        {"name": "name", "type": "string"},
-                        {"name": "version", "type": "string"},
-                        {"name": "chainId", "type": "uint256"},
-                        {"name": "verifyingContract", "type": "address"},
-                    ],
-                    "Agent": [
-                        {"name": "source", "type": "string"},
-                        {"name": "connectionId", "type": "bytes32"},
-                    ],
-                },
-                "primaryType": "Agent",
-                "message": {
-                    "source": "trading_bot",
-                    "connectionId": f"0x{hashlib.sha256(f'{self.api_key}:{nonce}'.encode()).hexdigest()}",
-                },
-            }
-
-            # Encode and sign
-            signed_message = Account.sign_message(
-                encode_structured_data(primitive=full_message), private_key
-            )
-
-            return {
-                "r": hex(signed_message.r),
-                "s": hex(signed_message.s),
-                "v": signed_message.v,
-            }
-
-        except Exception as e:
-            logger.error(f"EIP712 signing failed: {e}")
-            # Return placeholder signature for testing
-            return {
-                "r": "0x53749d5b30552aeb2fca34b530185976545bb22d0b3ce6f62e31be961a59298",
-                "s": "0x755c40ba9bf05223521753995abb2f73ab3229be8ec921f350cb447e384d8ed8",
-                "v": 27,
-            }
-
     def fetch_history(self, symbol: str = MARKET_SYMBOL, limit: int = 300) -> dict:
-        # For now, use dummy data until we confirm the correct API endpoint
-        import pandas as pd
-        dates = pd.date_range('2024-01-01', periods=limit, freq='1min')
-        return {
-            'candles': [
+        if self.info is None:
+            dates = pd.date_range("2024-01-01", periods=limit, freq="1min")
+            return {
+                "candles": [
+                    {
+                        "timestamp": int(d.timestamp() * 1000),
+                        "open": 100.0,
+                        "high": 100.0,
+                        "low": 100.0,
+                        "close": 100.0,
+                        "volume": 0,
+                    }
+                    for d in dates
+                ]
+            }
+
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - limit * 60_000
+        candles = self.info.candles_snapshot(symbol, interval="1m", startTime=start_ms, endTime=end_ms)
+        normalized = []
+        for c in candles:
+            normalized.append(
                 {
-                    'timestamp': int(d.timestamp() * 1000),
-                    'open': 85.0 + (i % 10 - 5) * 0.1,
-                    'high': 85.5 + (i % 10 - 5) * 0.1,
-                    'low': 84.5 + (i % 10 - 5) * 0.1,
-                    'close': 85.0 + (i % 10 - 5) * 0.1,
-                    'volume': 1000 + i * 10
-                } for i, d in enumerate(dates)
-            ]
-        }
+                    "timestamp": int(c.get("t") or 0),
+                    "open": float(c.get("o") or 0),
+                    "high": float(c.get("h") or 0),
+                    "low": float(c.get("l") or 0),
+                    "close": float(c.get("c") or 0),
+                    "volume": float(c.get("v") or 0),
+                }
+            )
+        return {"candles": normalized}
 
     def place_order(
         self,
@@ -203,191 +173,119 @@ class HyperliquidClient:
         if leverage > MAX_LEVERAGE:
             raise ValueError(f"Requested leverage {leverage} exceeds MAX_LEVERAGE={MAX_LEVERAGE}")
 
-        # This implementation currently does NOT place protective TP/SL orders on-exchange.
-        # Refuse to trade live unless explicitly allowed.
-        if not ALLOW_UNPROTECTED_POSITIONS and (stop_loss is not None or take_profit is not None):
+        if self.exchange is None or self.info is None:
+            raise RuntimeError("Hyperliquid exchange client not initialized.")
+
+        coin = MARKET_SYMBOL
+        mids = self.info.all_mids()
+        mid = float(mids[self.info.name_to_coin[coin]])
+
+        sz = float(size_usd) / max(mid, 1e-9)
+        sz_decimals = int(self.info.asset_to_sz_decimals[self.info.name_to_asset(coin)])
+        sz = float(f"{sz:.{sz_decimals}f}")
+        if sz <= 0:
+            raise ValueError("Calculated order size is zero after rounding.")
+
+        is_buy = side.lower() == "buy"
+        self.exchange.update_leverage(leverage=leverage, name=coin, is_cross=True)
+
+        slippage = float(os.getenv("ORDER_SLIPPAGE", "0.01"))
+        px = mid * (1 + slippage) if is_buy else mid * (1 - slippage)
+
+        orders = [
+            {
+                "coin": coin,
+                "is_buy": is_buy,
+                "sz": sz,
+                "limit_px": float(px),
+                "order_type": {"limit": {"tif": "Ioc"}},
+                "reduce_only": False,
+            }
+        ]
+
+        have_protection = stop_loss is not None and take_profit is not None
+        if not have_protection and not ALLOW_UNPROTECTED_POSITIONS:
             raise RuntimeError(
-                "Refusing live order: protective TP/SL are not enforced on-exchange in this implementation. "
-                "Set ALLOW_UNPROTECTED_POSITIONS=true only if you understand the risk."
+                "Refusing live order without TP/SL. Set ALLOW_UNPROTECTED_POSITIONS=true to trade without protection."
             )
 
-        try:
-            asset_id = self._get_asset_id(MARKET_SYMBOL)
-            nonce = int(time.time() * 1000)
-
-            # First, update leverage
-            leverage_action = {
-                "type": "updateLeverage",
-                "asset": asset_id,
-                "isCross": True,
-                "leverage": leverage
-            }
-
-            leverage_payload = {
-                "action": leverage_action,
-                "nonce": nonce,
-                "signature": self._sign_eip712(leverage_action, nonce),
-                "vaultAddress": None
-            }
-
-            # Update leverage first
-            leverage_response = self._session.post(self.base_url, json=leverage_payload, timeout=10)
-            leverage_response.raise_for_status()
-            logger.info(f"Leverage updated to {leverage}x for {MARKET_SYMBOL}")
-
-            # Now place the order
-            is_buy = side.lower() == "buy"
-            order_action = {
-                "type": "order",
-                "orders": [
-                    {
-                        "a": asset_id,  # asset ID
-                        "b": is_buy,    # is buy
-                        "p": "0",       # price (0 for market order)
-                        "s": str(size_usd),  # size as string
-                        "r": False,     # reduce only
-                        "t": {
-                            "limit": {
-                                "tif": "Ioc"  # Immediate or Cancel for market-like execution
-                            }
-                        }
-                    }
-                ],
-                "grouping": "na"
-            }
-
-            order_payload = {
-                "action": order_action,
-                "nonce": nonce + 1,  # Increment nonce
-                "signature": self._sign_eip712(order_action, nonce + 1),
-                "vaultAddress": None
-            }
-
-            response = self._session.post(self.base_url, json=order_payload, timeout=10)
-            response.raise_for_status()
-            result = response.json()
-
-            if not isinstance(result, dict):
-                raise ValueError(f"Unexpected API response: {result}")
-
-            logger.info(
-                "LIVE ORDER PLACED: %s notional_usd=%.2f leverage=%sx symbol=%s",
-                side,
-                float(size_usd),
-                leverage,
-                MARKET_SYMBOL,
+        if have_protection:
+            sl_px = float(stop_loss)
+            tp_px = float(take_profit)
+            orders.append(
+                {
+                    "coin": coin,
+                    "is_buy": (not is_buy),
+                    "sz": sz,
+                    "limit_px": sl_px,
+                    "order_type": {"trigger": {"triggerPx": sl_px, "isMarket": True, "tpsl": "sl"}},
+                    "reduce_only": True,
+                }
             )
+            orders.append(
+                {
+                    "coin": coin,
+                    "is_buy": (not is_buy),
+                    "sz": sz,
+                    "limit_px": tp_px,
+                    "order_type": {"trigger": {"triggerPx": tp_px, "isMarket": True, "tpsl": "tp"}},
+                    "reduce_only": True,
+                }
+            )
+            result = self.exchange.bulk_orders(orders, grouping="normalTpsl")
+        else:
+            result = self.exchange.bulk_orders(orders, grouping="na")
 
-            return {
-                "order_id": result.get("response", {}).get("data", {}).get("statuses", [{}])[0].get("oid", f"live_{idempotency_key or str(uuid.uuid4())[:8]}"),
-                "status": "placed",
-                "symbol": MARKET_SYMBOL,
-                "side": side,
-                "leverage": leverage,
-                "size_usd": float(size_usd),
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "response": result
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to place live order: {e}")
-            # In live mode, never pretend we placed an order.
-            raise
+        return {
+            "order_id": f"hl_{idempotency_key or str(uuid.uuid4())[:8]}",
+            "status": "placed",
+            "symbol": coin,
+            "side": side,
+            "leverage": leverage,
+            "size_usd": float(size_usd),
+            "size_coin": float(sz),
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "response": result,
+        }
 
     def get_positions(self) -> dict:
         """Get user positions via REST API"""
         if not LIVE_TRADING:
             return {"positions": []}
-        try:
-            payload = {
-                "type": "userState",
-                "user": self.wallet_address  # Use wallet address, not API key
-            }
-
-            response = self._session.post(self.info_url, json=payload, timeout=10)
-            response.raise_for_status()
-            result = response.json()
-
-            positions = []
-            for asset_pos in result.get("assetPositions", []):
-                pos = asset_pos.get("position", {})
-                if pos:
-                    positions.append({
-                        "id": f"{pos.get('coin', '')}_{pos.get('szi', 0)}",
-                        "symbol": pos.get("coin", ""),
-                        "size": float(pos.get("szi", 0)),
-                        "entry_price": float(pos.get("entryPx", 0)),
-                        "unrealized_pnl": float(pos.get("unrealizedPnl", 0)),
-                        "leverage": pos.get("leverage", {}).get("value", 1),
-                        "status": "open"
-                    })
-
-            return {"positions": positions}
-
-        except Exception as e:
-            logger.error(f"Failed to get positions: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response body: {e.response.text}")
+        if self.info is None:
             return {"positions": []}
+        result = self.info.user_state(self.wallet_address)
+        positions = []
+        for asset_pos in result.get("assetPositions", []):
+            pos = asset_pos.get("position", {}) or {}
+            if not pos:
+                continue
+            szi = float(pos.get("szi", 0) or 0)
+            if szi == 0:
+                continue
+            positions.append(
+                {
+                    "id": f"{pos.get('coin', '')}_{szi}",
+                    "symbol": pos.get("coin", ""),
+                    "size": szi,
+                    "entry_price": float(pos.get("entryPx", 0) or 0),
+                    "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),
+                    "leverage": float((pos.get("leverage", {}) or {}).get("value", 1) or 1),
+                    "status": "open",
+                }
+            )
+        return {"positions": positions}
 
     def close_position(self, position_id: str) -> dict:
         """Close position via REST API"""
         if not LIVE_TRADING:
             return {"status": "dry_run", "position_id": position_id}
-        try:
-            # Parse position details from ID
-            # This is a simplified implementation
-            asset_id = self._get_asset_id(MARKET_SYMBOL)
-            nonce = int(time.time() * 1000)
-
-            # Get current position to determine close size
-            positions = self.get_positions()["positions"]
-            position = next((p for p in positions if p["id"] == position_id), None)
-
-            if not position:
-                logger.error(f"Position {position_id} not found")
-                return {"status": "error", "position_id": position_id}
-
-            # Create close order (opposite side, reduce only)
-            is_buy = position["size"] < 0  # If negative size, need to buy to close short
-            close_size = abs(position["size"])
-
-            close_action = {
-                "type": "order",
-                "orders": [
-                    {
-                        "a": asset_id,
-                        "b": is_buy,
-                        "p": "0",  # Market order
-                        "s": str(close_size),
-                        "r": True,  # Reduce only
-                        "t": {
-                            "limit": {
-                                "tif": "Ioc"
-                            }
-                        }
-                    }
-                ],
-                "grouping": "na"
-            }
-
-            close_payload = {
-                "action": close_action,
-                "nonce": nonce,
-                "signature": self._sign_eip712(close_action, nonce),
-                "vaultAddress": None
-            }
-
-            response = self._session.post(self.base_url, json=close_payload, timeout=10)
-            response.raise_for_status()
-
-            logger.info(f"Position {position_id} closed")
-            return {"status": "closed", "position_id": position_id}
-
-        except Exception as e:
-            logger.error(f"Failed to close position: {e}")
-            return {"status": "error", "position_id": position_id, "error": str(e)}
+        if self.exchange is None:
+            raise RuntimeError("Hyperliquid exchange client not initialized.")
+        coin = position_id.split("_")[0] if "_" in position_id else MARKET_SYMBOL
+        resp = self.exchange.market_close(coin)
+        return {"status": "closed", "position_id": position_id, "response": resp}
 
 
 class TradeManager:

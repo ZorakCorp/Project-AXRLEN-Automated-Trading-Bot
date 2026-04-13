@@ -115,8 +115,8 @@ class RawDataIngestion:
         except Exception as e:
             logger.warning(f"Gemini API failed for TP/SL levels: {e}. Using default levels.")
             context["tp_sl_recommendation"] = {
-                "take_profit": 0.5,
-                "stop_loss": 0.3,
-                "reason": "Default levels (Gemini API unavailable)"
+                "take_profit_percentage": 0.5,
+                "stop_loss_percentage": 0.3,
+                "rationale": "Default levels (Gemini API unavailable)",
             }
         return context
