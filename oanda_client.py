@@ -1,14 +1,6 @@
 import os
 import logging
 from typing import Dict, List, Optional, Any
-from oandapyV20 import API
-from oandapyV20.exceptions import V20Error
-from oandapyV20.endpoints.pricing import PricingStream
-from oandapyV20.endpoints.orders import OrderCreate
-from oandapyV20.endpoints.positions import OpenPositions
-from oandapyV20.endpoints.accounts import AccountSummary
-from oandapyV20.endpoints.instruments import InstrumentsCandles
-import oandapyV20.endpoints.positions as positions
 import pandas as pd
 from datetime import datetime, timedelta
 from config import (
@@ -20,6 +12,26 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    from oandapyV20 import API
+    from oandapyV20.exceptions import V20Error
+    from oandapyV20.endpoints.pricing import PricingStream
+    from oandapyV20.endpoints.orders import OrderCreate
+    from oandapyV20.endpoints.positions import OpenPositions
+    from oandapyV20.endpoints.accounts import AccountSummary
+    from oandapyV20.endpoints.instruments import InstrumentsCandles
+    import oandapyV20.endpoints.positions as positions
+except Exception:  # optional dependency
+    API = None  # type: ignore
+    V20Error = Exception  # type: ignore
+    PricingStream = None  # type: ignore
+    OrderCreate = None  # type: ignore
+    OpenPositions = None  # type: ignore
+    AccountSummary = None  # type: ignore
+    InstrumentsCandles = None  # type: ignore
+    positions = None  # type: ignore
+
 
 class OandaClient:
     def __init__(self):
@@ -35,6 +47,10 @@ class OandaClient:
         else:
             self.dummy_mode = False
             validate_oanda_config()
+            if API is None:
+                raise RuntimeError(
+                    "oandapyV20 is not installed. Install it to use OANDA mode (e.g. `pip install oandapyV20`)."
+                )
             self.api = API(access_token=self.api_key, environment=self.environment)
 
     def get_account_summary(self) -> Dict:

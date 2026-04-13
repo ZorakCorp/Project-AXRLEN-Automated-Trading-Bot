@@ -1,111 +1,59 @@
-# AXRLEN-TRADING
-Automated Ethereum Prediction Trading Bot for Hyperliquid
+## AXRLEN-TRADING
 
-## Overview
+Automated trading bot skeleton (Hyperliquid + Gemini) with safety guardrails.
 
-This repository contains a Python-based automated trading bot for Ethereum (ETH) perpetual futures trading on Hyperliquid.
+### Overview
 
-The system uses a layered prediction engine driven by a "hive mind" of intelligence brains. These brains encode:
+This repository is a Python trading bot framework that combines:
 
-- Vedic astrological timing and Vedha logic
-- Crypto market astrology and planetary influences
-- Leader Mahadasha geopolitical timing
-- AI intelligence via Gemini API
-- Sentiment analysis and dark pool flows
-- Probability aggregation, risk sizing, and idempotent execution
+- a layered “signal engine” that outputs `LONG/SHORT/FLAT`
+- deterministic risk sizing
+- an exchange execution adapter (currently **placeholder** for Hyperliquid signing/order formats)
+- Gemini as an intelligence layer that returns **structured JSON**
 
-## Key Features
+### Safety defaults (important)
 
-- **Aggressive Risk Management**: 90% capital allocation per trade with profit compounding
-- **Single Position Trading**: Only one active trade at a time
-- **Red Day Gates**: Trading halts on astrological Red Days (e.g., full/new moon)
-- **Layered Signal Brains**: Astrology, AI, sentiment, leadership, and dark pool signals
-- **Calibration Mode**: Analyze trade logs and adjust signal weights
-- **24/7 Operation**: Designed for Railway hosting with continuous monitoring
+- **Dry-run by default**: `LIVE_TRADING=false` means the bot never places real orders.
+- **No fake-success**: if live order placement fails, the bot raises instead of silently “simulating success”.
+- **Symbol validation**: live trading refuses unsupported placeholder symbols (e.g. `BRENTUSD`).
+- **Leverage cap**: `MAX_LEVERAGE` limits requested leverage.
+- **Notional cap**: `MAX_NOTIONAL_PCT` caps position notional vs capital.
 
-## Setup for Live Trading
+### Setup
 
-### 1. Get Hyperliquid API Access
-- Sign up at [Hyperliquid](https://hyperliquid.xyz/)
-- Generate API keys from your account settings
-- Note your API key and secret
+1) Copy `.env.example` to `.env` and fill in keys.
 
-### 2. Get Gemini AI API Key
-- Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
-- Generate API key for Gemini 1.5 Flash
-
-### 3. Configure Environment
-Update your `.env` file with real API credentials:
+2) Install:
 
 ```bash
-# Hyperliquid API Configuration
-HYPERLIQUID_API_KEY=your_real_hyperliquid_key
-HYPERLIQUID_API_SECRET=your_real_hyperliquid_secret
-HYPERLIQUID_WALLET_ADDRESS=0xYourEthereumWalletAddress
-
-# Gemini AI API Configuration
-GEMINI_API_KEY=your_real_gemini_key
-
-# Trading Configuration
-MARKET_SYMBOL=ETH
-CAPITAL_USD=100000
+python -m pip install -r requirements.txt
 ```
 
-### 4. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+3) Run (dry-run):
 
-### 5. Test the Bot
 ```bash
 python main.py run
 ```
 
-## Usage
+### Configuration (env)
 
-### Training the AI Model
-```bash
-python main.py train --csv historical_data.csv
-```
+Core:
 
-### Running the Trading Bot
-```bash
-python main.py run
-```
+- `MARKET_SYMBOL` (recommended: `ETH`)
+- `CAPITAL_USD`
+- `MODEL_PATH`
 
-### Calibration Analysis
-```bash
-python main.py calibrate
-```
+Safety:
 
-## Architecture
+- `LIVE_TRADING` (default `false`)
+- `MAX_NOTIONAL_PCT` (default `0.10`)
+- `MAX_LEVERAGE` (default `10`)
+- `ALLOW_UNPROTECTED_POSITIONS` (default `false`)
 
-### Signal Brains (No Technical Analysis)
-- **Astrology Brain**: Vedic planetary positions & Vedha calculations
-- **AI Brain**: Gemini API interpretation of market conditions
-- **Sentiment Brain**: Crypto news & market sentiment analysis
-- **Leadership Brain**: Mahadasha timing for world leaders
-- **Dark Pool Brain**: Institutional flow analysis
+### Notes / current limitations
 
-### Risk Management
-- 90% capital allocation per trade
-- Kelly Criterion scaling
-- Single position at a time
-- Red Day trading halts
-- Dynamic take profit/stop loss (AI-determined)
-
-## Deployment
-
-The bot is configured for Railway deployment with Docker. Update `railway.toml` and push to GitHub for automatic deployment.
-
-## Important Notes
-
-- **Risk Warning**: This bot uses aggressive 90% capital allocation - use at your own risk
-- **API Limits**: Respect rate limits for both Hyperliquid and Gemini APIs
-- **Market Hours**: Crypto markets trade 24/7
-- **Test First**: Always test with small amounts before full deployment</content>
-<parameter name="filePath">/workspaces/AXRLEN-TRADING/README.md# AXRLEN-TRADING
-Automated Brent Oil Prediction Trading Bot for Hyperliquid
+- The Hyperliquid execution code in `trading_bot.py` contains **placeholder signing/order assumptions**. You must update it using Hyperliquid’s official API documentation before enabling `LIVE_TRADING=true`.
+- TP/SL are computed, but **protective orders are not guaranteed enforced on-exchange** in this implementation. This is why the live path refuses to trade unless you explicitly set `ALLOW_UNPROTECTED_POSITIONS=true`.
 
 ## Overview
 

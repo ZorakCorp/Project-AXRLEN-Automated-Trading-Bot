@@ -4,6 +4,8 @@ import re
 from typing import Any, Dict, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from config import GEMINI_API_BASE, GEMINI_API_KEY, GEMINI_API_MODEL
 
 logger = logging.getLogger(__name__)
@@ -14,7 +16,25 @@ class GeminiClient:
         self.api_key = api_key or GEMINI_API_KEY
         self.base_url = base_url or GEMINI_API_BASE
         self.model = model or GEMINI_API_MODEL
+        self._session = self._build_session()
         self._ensure_api_key()
+
+    @staticmethod
+    def _build_session() -> requests.Session:
+        session = requests.Session()
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            status=3,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"POST"}),
+            raise_on_status=False,
+        )
+        session.mount("https://", HTTPAdapter(max_retries=retry))
+        session.mount("http://", HTTPAdapter(max_retries=retry))
+        return session
 
     def _ensure_api_key(self):
         if not self.api_key:
@@ -62,8 +82,10 @@ class GeminiClient:
                 "maxOutputTokens": 1024
             }
         }
-        response = requests.post(endpoint, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout)
-        response.raise_for_status()
+        response = self._session.post(endpoint, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout)
+        if response.status_code >= 400:
+            # Don't leak request details; return concise error context.
+            raise RuntimeError(f"Gemini API request failed (status={response.status_code}): {response.text[:500]}")
         data = response.json()
         text = self._extract_text(data)
         if text:
@@ -153,8 +175,27 @@ class GeminiClient:
         )
         user_message = f"Market context: {json.dumps(context)}"
         result = self.call(system_prompt, user_message)
+        def _safe_float(value: Any, default: float) -> float:
+            try:
+                if value is None:
+                    return float(default)
+                return float(value)
+            except Exception:
+                return float(default)
+
+        tp = _safe_float(result.get("take_profit_percentage", 0.5) if isinstance(result, dict) else 0.5, 0.5)
+        sl = _safe_float(result.get("stop_loss_percentage", 0.3) if isinstance(result, dict) else 0.3, 0.3)
+
+        # Hard bounds to prevent prompt-injection / malformed outputs from causing extreme risk.
+        tp = max(0.1, min(5.0, tp))
+        sl = max(0.1, min(2.0, sl))
+
+        rationale = ""
+        if isinstance(result, dict):
+            rationale = str(result.get("rationale", ""))[:500]
+
         return {
-            "take_profit_percentage": float(result.get("take_profit_percentage", 0.5)),
-            "stop_loss_percentage": float(result.get("stop_loss_percentage", 0.3)),
-            "rationale": result.get("rationale", "AI-determined levels"),
+            "take_profit_percentage": tp,
+            "stop_loss_percentage": sl,
+            "rationale": rationale or "AI-determined levels",
         }

@@ -232,14 +232,30 @@ class ProbabilityEngine:
         return signal.multiplier
 
     def aggregate(self, signals: List[Signal]) -> float:
-        total_score = 0.0
+        """
+        Aggregate signals into a 0..100 score where 50 is neutral.
+
+        - Each signal contributes: strength * signal.weight * temporal_multiplier * domain_weight
+        - strength may be negative (bearish), so we map the signed score onto 0..100.
+        """
+        if not signals:
+            return 50.0
+
+        total = 0.0
+        max_abs = 0.0
         for signal in signals:
-            weight = self.domain_weights.get(signal.domain, 0.0)
-            multiplier = self.temporal_multiplier(signal)
-            total_score += signal.strength * weight * multiplier
-        max_score = 100.0 * len(signals)
-        normalized = total_score / max_score * 100 if max_score > 0 else 0.0
-        return min(normalized, 100.0)
+            domain_w = float(self.domain_weights.get(signal.domain, 0.0) or 0.0)
+            mult = float(self.temporal_multiplier(signal) or 1.0)
+            contrib = float(signal.strength) * float(signal.weight) * float(mult) * domain_w
+            total += contrib
+            max_abs += abs(float(signal.weight) * float(mult) * domain_w)
+
+        if max_abs <= 0:
+            return 50.0
+
+        signed = max(-1.0, min(1.0, total / max_abs))  # -1..1
+        score = (signed + 1.0) / 2.0 * 100.0  # 0..100 with 50 neutral
+        return max(0.0, min(100.0, score))
 
     @staticmethod
     def classify(confidence_score: float, vedha_bias: str = None) -> str:
@@ -265,7 +281,11 @@ class RiskEngine:
             return 0.0
         kelly_pct = min(self.max_risk_pct, confidence_score / 100 * 0.02)
         risk_amount = self.capital * kelly_pct
-        return round(risk_amount, 2)
+        # Convert risk budget into a notional size (USD) using stop distance.
+        # units = risk_amount / stop_distance; notional = units * price
+        units = risk_amount / stop_distance
+        notional = units * price
+        return round(max(notional, 0.0), 2)
 
     def update_capital(self, pnl: float):
         self.capital += pnl

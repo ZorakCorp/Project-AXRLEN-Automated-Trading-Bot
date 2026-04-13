@@ -4,11 +4,15 @@ import json
 import logging
 import time
 import uuid
+import signal
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import os
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from ai_model import PredictionModel
 from config import (
     CAPITAL_USD,
@@ -16,26 +20,33 @@ from config import (
     HYPERLIQUID_API_KEY,
     HYPERLIQUID_API_SECRET,
     HYPERLIQUID_WALLET_ADDRESS,
+    LIVE_TRADING,
+    MAX_NOTIONAL_PCT,
+    MAX_LEVERAGE,
+    ALLOW_UNPROTECTED_POSITIONS,
+    HYPERLIQUID_EXECUTION_VERIFIED,
+    DEFAULT_STOP_LOSS_PCT,
+    DEFAULT_TAKE_PROFIT_PCT,
     MARKET_SYMBOL,
     MODEL_PATH,
     validate_hyperliquid_config,
 )
-from hyperliquid_ws_client import HyperliquidWebSocketClient
 from raw_data_engine import RawDataIngestion
 from signal_engine import RiskEngine, run_probability
+from state_store import append_jsonl, load_json, save_json
 
 logger = logging.getLogger(__name__)
 
 
 class HyperliquidClient:
     def __init__(self):
-        self.ws_client = HyperliquidWebSocketClient()
         self.api_key = HYPERLIQUID_API_KEY
         self.api_secret = HYPERLIQUID_API_SECRET
         self.wallet_address = HYPERLIQUID_WALLET_ADDRESS
-        self.base_url = "https://api.hyperliquid.xyz/exchange"
-        self.info_url = "https://api.hyperliquid.xyz/info"
+        self.base_url = f"{HYPERLIQUID_API_BASE}/exchange"
+        self.info_url = f"{HYPERLIQUID_API_BASE}/info"
         validate_hyperliquid_config()
+        self._session = self._build_session()
 
         # Asset ID mapping (ETH = 4, BTC = 1, etc.)
         self.asset_ids = {
@@ -44,13 +55,42 @@ class HyperliquidClient:
             "BRENTUSD": 99999,  # Placeholder - Hyperliquid doesn't support commodities
         }
 
+    @staticmethod
+    def _build_session() -> requests.Session:
+        session = requests.Session()
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            status=3,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"POST"}),
+            raise_on_status=False,
+        )
+        session.mount("https://", HTTPAdapter(max_retries=retry))
+        session.mount("http://", HTTPAdapter(max_retries=retry))
+        return session
+
     def _get_asset_id(self, symbol: str) -> int:
         """Get asset ID for symbol"""
         if symbol in self.asset_ids:
             return self.asset_ids[symbol]
-        # Default to ETH if unknown
-        logger.warning(f"Unknown symbol {symbol}, defaulting to ETH")
-        return 4
+        raise ValueError(f"Unsupported MARKET_SYMBOL={symbol}. Supported: {sorted(self.asset_ids.keys())}")
+
+    def validate_tradable_symbol(self) -> None:
+        asset_id = self.asset_ids.get(MARKET_SYMBOL)
+        if asset_id is None:
+            raise ValueError(f"Unsupported MARKET_SYMBOL={MARKET_SYMBOL}. Supported: {sorted(self.asset_ids.keys())}")
+        if LIVE_TRADING and (MARKET_SYMBOL == "BRENTUSD" or asset_id == 99999):
+            raise RuntimeError(
+                "Refusing LIVE_TRADING: MARKET_SYMBOL=BRENTUSD is configured as a placeholder and is not tradable on Hyperliquid."
+            )
+        if LIVE_TRADING and not HYPERLIQUID_EXECUTION_VERIFIED:
+            raise RuntimeError(
+                "Refusing LIVE_TRADING: Hyperliquid execution in this repo is not verified. "
+                "After you confirm signing/order formats against official docs, set HYPERLIQUID_EXECUTION_VERIFIED=true."
+            )
 
     def _sign_eip712(self, action: dict, nonce: int) -> dict:
         """Create EIP712 signature for Hyperliquid using Ethereum private key"""
@@ -136,6 +176,39 @@ class HyperliquidClient:
         idempotency_key: Optional[str] = None,
     ) -> dict:
         """Place live order on Hyperliquid via REST API"""
+        if not LIVE_TRADING:
+            # Explicit dry-run mode: never silently place real orders.
+            logger.warning(
+                "DRY_RUN: LIVE_TRADING is disabled; simulating %s order size_usd=%s for %s",
+                side,
+                size_usd,
+                MARKET_SYMBOL,
+            )
+            return {
+                "order_id": f"dryrun_{idempotency_key or str(uuid.uuid4())[:8]}",
+                "status": "simulated",
+                "symbol": MARKET_SYMBOL,
+                "side": side,
+                "leverage": leverage,
+                "size_usd": float(size_usd),
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "dry_run": True,
+            }
+
+        self.validate_tradable_symbol()
+
+        if leverage > MAX_LEVERAGE:
+            raise ValueError(f"Requested leverage {leverage} exceeds MAX_LEVERAGE={MAX_LEVERAGE}")
+
+        # This implementation currently does NOT place protective TP/SL orders on-exchange.
+        # Refuse to trade live unless explicitly allowed.
+        if not ALLOW_UNPROTECTED_POSITIONS and (stop_loss is not None or take_profit is not None):
+            raise RuntimeError(
+                "Refusing live order: protective TP/SL are not enforced on-exchange in this implementation. "
+                "Set ALLOW_UNPROTECTED_POSITIONS=true only if you understand the risk."
+            )
+
         try:
             asset_id = self._get_asset_id(MARKET_SYMBOL)
             nonce = int(time.time() * 1000)
@@ -156,7 +229,7 @@ class HyperliquidClient:
             }
 
             # Update leverage first
-            leverage_response = requests.post(self.base_url, json=leverage_payload, timeout=10)
+            leverage_response = self._session.post(self.base_url, json=leverage_payload, timeout=10)
             leverage_response.raise_for_status()
             logger.info(f"Leverage updated to {leverage}x for {MARKET_SYMBOL}")
 
@@ -188,15 +261,20 @@ class HyperliquidClient:
                 "vaultAddress": None
             }
 
-            response = requests.post(self.base_url, json=order_payload, timeout=10)
+            response = self._session.post(self.base_url, json=order_payload, timeout=10)
             response.raise_for_status()
             result = response.json()
 
             if not isinstance(result, dict):
                 raise ValueError(f"Unexpected API response: {result}")
 
-            leveraged_size = size_usd * leverage
-            logger.info(f"LIVE ORDER PLACED: {side} ${leveraged_size:.2f} ({leverage}x leveraged) of {MARKET_SYMBOL}")
+            logger.info(
+                "LIVE ORDER PLACED: %s notional_usd=%.2f leverage=%sx symbol=%s",
+                side,
+                float(size_usd),
+                leverage,
+                MARKET_SYMBOL,
+            )
 
             return {
                 "order_id": result.get("response", {}).get("data", {}).get("statuses", [{}])[0].get("oid", f"live_{idempotency_key or str(uuid.uuid4())[:8]}"),
@@ -204,7 +282,7 @@ class HyperliquidClient:
                 "symbol": MARKET_SYMBOL,
                 "side": side,
                 "leverage": leverage,
-                "size_usd": leveraged_size,
+                "size_usd": float(size_usd),
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "response": result
@@ -212,20 +290,8 @@ class HyperliquidClient:
 
         except Exception as e:
             logger.error(f"Failed to place live order: {e}")
-            # Fallback to dummy response for testing
-            leveraged_size = size_usd * leverage
-            logger.warning(f"FALLBACK: Simulating {side} ${leveraged_size:.2f} ({leverage}x leveraged) order")
-            return {
-                "order_id": f"fallback_{idempotency_key or str(uuid.uuid4())[:8]}",
-                "status": "simulated",
-                "symbol": MARKET_SYMBOL,
-                "side": side,
-                "leverage": leverage,
-                "size_usd": leveraged_size,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "error": str(e)
-            }
+            # In live mode, never pretend we placed an order.
+            raise
 
     def get_positions(self) -> dict:
         """Get user positions via REST API"""
@@ -235,7 +301,7 @@ class HyperliquidClient:
                 "user": self.wallet_address  # Use wallet address, not API key
             }
 
-            response = requests.post(self.info_url, json=payload, timeout=10)
+            response = self._session.post(self.info_url, json=payload, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -307,7 +373,7 @@ class HyperliquidClient:
                 "vaultAddress": None
             }
 
-            response = requests.post(self.base_url, json=close_payload, timeout=10)
+            response = self._session.post(self.base_url, json=close_payload, timeout=10)
             response.raise_for_status()
 
             logger.info(f"Position {position_id} closed")
@@ -328,6 +394,11 @@ class TradeManager:
         self.weekly_loss = 0.0
         self.trade_log = []
         self.ai_model = None
+        self._shutdown_requested = False
+
+        self.state_path = os.getenv("BOT_STATE_PATH", "bot_state.json")
+        self.journal_path = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
+        self._load_state()
 
         if os.path.exists(MODEL_PATH):
             self.ai_model = PredictionModel(model_path=MODEL_PATH)
@@ -336,6 +407,81 @@ class TradeManager:
             except Exception:
                 logger.warning("AI model file exists but could not be loaded, continuing without AI signal")
                 self.ai_model = None
+
+        self._install_signal_handlers()
+        self._log_startup_summary()
+
+    def _install_signal_handlers(self) -> None:
+        def _handler(signum, _frame):
+            logger.warning("Shutdown requested (signal=%s). Will exit after current iteration.", signum)
+            self._shutdown_requested = True
+
+        for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, _handler)
+            except Exception:
+                pass
+
+    def _log_startup_summary(self) -> None:
+        event = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": "startup",
+            "symbol": MARKET_SYMBOL,
+            "capital_usd": CAPITAL_USD,
+            "live_trading": LIVE_TRADING,
+            "max_notional_pct": MAX_NOTIONAL_PCT,
+            "max_leverage": MAX_LEVERAGE,
+            "allow_unprotected_positions": ALLOW_UNPROTECTED_POSITIONS,
+            "execution_verified": HYPERLIQUID_EXECUTION_VERIFIED,
+            "model_loaded": self.ai_model is not None,
+            "state_path": self.state_path,
+            "journal_path": self.journal_path,
+        }
+        append_jsonl(self.journal_path, event)
+        logger.info(
+            "Startup: symbol=%s live=%s verified=%s model_loaded=%s caps(max_notional_pct=%s max_leverage=%s)",
+            MARKET_SYMBOL,
+            LIVE_TRADING,
+            HYPERLIQUID_EXECUTION_VERIFIED,
+            self.ai_model is not None,
+            MAX_NOTIONAL_PCT,
+            MAX_LEVERAGE,
+        )
+
+    def _load_state(self) -> None:
+        try:
+            state = load_json(self.state_path, default={})
+        except Exception as e:
+            logger.warning("Failed to load state file %s: %s", self.state_path, e)
+            state = {}
+
+        self.daily_loss = float(state.get("daily_loss", 0.0) or 0.0)
+        self.weekly_loss = float(state.get("weekly_loss", 0.0) or 0.0)
+        self.trade_log = list(state.get("trade_log", []) or [])
+        self.active_position = state.get("active_position")
+        capital_override = state.get("capital_usd")
+        if capital_override is not None:
+            try:
+                self.risk_engine.capital = float(capital_override)
+            except Exception:
+                pass
+
+    def _save_state(self) -> None:
+        state = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "symbol": MARKET_SYMBOL,
+            "capital_usd": self.risk_engine.capital,
+            "daily_loss": self.daily_loss,
+            "weekly_loss": self.weekly_loss,
+            "trade_log": self.trade_log[-1000:],
+            "active_position": self.active_position,
+        }
+        try:
+            save_json(self.state_path, state)
+        except Exception as e:
+            logger.warning("Failed to save state file %s: %s", self.state_path, e)
 
     def evaluate_market(self):
         raw = self.client.fetch_history()
@@ -364,18 +510,19 @@ class TradeManager:
         )
         return probability, df, context
 
-    def calculate_stop_distance(self, df):
+    def calculate_stop_distance(self, df, sl_percent: float) -> float:
+        """Return a price-distance for the stop, in quote currency units."""
         if "close" not in df.columns or "high" not in df.columns or "low" not in df.columns:
-            return float(df["close"].iloc[-1]) * (SL_PERCENT / 100)
+            return float(df["close"].iloc[-1]) * (sl_percent / 100)
 
         df = df.dropna(subset=["close", "high", "low"])
         if len(df) < 21:
-            return float(df["close"].iloc[-1]) * (SL_PERCENT / 100)
+            return float(df["close"].iloc[-1]) * (sl_percent / 100)
 
         df["high_low"] = df["high"] - df["low"]
         atr = df["high_low"].rolling(14).mean().iloc[-1]
         if pd.isna(atr) or atr <= 0:
-            return float(df["close"].iloc[-1]) * (SL_PERCENT / 100)
+            return float(df["close"].iloc[-1]) * (sl_percent / 100)
         return float(atr) * 2
 
     def should_halt_trading(self) -> bool:
@@ -392,6 +539,19 @@ class TradeManager:
         self.daily_loss += pnl if pnl < 0 else 0
         self.weekly_loss += pnl if pnl < 0 else 0
         self.risk_engine.update_capital(pnl)
+        append_jsonl(
+            self.journal_path,
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": "pnl",
+                "symbol": MARKET_SYMBOL,
+                "pnl": float(pnl),
+                "daily_loss": float(self.daily_loss),
+                "weekly_loss": float(self.weekly_loss),
+                "capital_usd": float(self.risk_engine.capital),
+            },
+        )
+        self._save_state()
 
     def execute_signal(self, probability: Dict, df, context: Dict):
         classification = probability["classification"]
@@ -416,16 +576,19 @@ class TradeManager:
             return
 
         last_price = float(df["close"].iloc[-1])
-        stop_distance = self.calculate_stop_distance(df)
+        # Get dynamic TP/SL from AI recommendation
+        tp_sl = context.get("tp_sl_recommendation", {}) or {}
+        tp_percent = float(tp_sl.get("take_profit_percentage", DEFAULT_TAKE_PROFIT_PCT) or DEFAULT_TAKE_PROFIT_PCT)
+        sl_percent = float(tp_sl.get("stop_loss_percentage", DEFAULT_STOP_LOSS_PCT) or DEFAULT_STOP_LOSS_PCT)
+        sl_percent = max(0.01, min(5.0, sl_percent))
+        tp_percent = max(0.01, min(10.0, tp_percent))
+
+        stop_distance = self.calculate_stop_distance(df, sl_percent=sl_percent)
         position_size = self.risk_engine.position_size(score, stop_distance, last_price)
+        position_size = min(position_size, CAPITAL_USD * MAX_NOTIONAL_PCT)
         if position_size <= 0:
             logger.info("Calculated position size is zero, skipping trade")
             return
-
-        # Get dynamic TP/SL from AI recommendation
-        tp_sl = context.get("tp_sl_recommendation", {})
-        tp_percent = tp_sl.get("take_profit_percentage", 0.5)
-        sl_percent = tp_sl.get("stop_loss_percentage", 0.3)
 
         stop_loss = round(last_price - stop_distance if classification == "LONG" else last_price + stop_distance, 2)
         take_profit = round(
@@ -445,6 +608,22 @@ class TradeManager:
             take_profit,
             idempotency_key,
         )
+        append_jsonl(
+            self.journal_path,
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": "submit_order",
+                "symbol": MARKET_SYMBOL,
+                "side": side,
+                "classification": classification,
+                "score": float(score),
+                "size_usd": float(position_size),
+                "stop_loss": float(stop_loss),
+                "take_profit": float(take_profit),
+                "idempotency_key": idempotency_key,
+                "live_trading": LIVE_TRADING,
+            },
+        )
         result = self.client.place_order(
             side=side,
             size_usd=position_size,
@@ -454,6 +633,7 @@ class TradeManager:
             idempotency_key=idempotency_key,
         )
         self.active_position = result
+        self._save_state()
         logger.info("Opened position: %s", result)
 
     def monitor_position(self):
@@ -461,6 +641,7 @@ class TradeManager:
         if not positions.get("positions"):
             logger.info("No open positions found")
             self.active_position = None
+            self._save_state()
             return
 
         latest = positions["positions"][0]
@@ -485,4 +666,27 @@ class TradeManager:
                 self.execute_signal(probability, df, context)
             except Exception as exc:
                 logger.exception("Error during trade loop: %s", exc)
+                append_jsonl(
+                    self.journal_path,
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "event": "loop_error",
+                        "symbol": MARKET_SYMBOL,
+                        "error": str(exc)[:500],
+                    },
+                )
+            finally:
+                self._save_state()
+
+            if self._shutdown_requested:
+                append_jsonl(
+                    self.journal_path,
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "event": "shutdown",
+                        "symbol": MARKET_SYMBOL,
+                    },
+                )
+                logger.info("Shutdown complete.")
+                return
             time.sleep(interval_seconds)

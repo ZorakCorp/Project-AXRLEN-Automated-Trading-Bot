@@ -1,60 +1,44 @@
 #!/usr/bin/env python3
 """
-Test script for dynamic TP/SL implementation
+Smoke test for dynamic TP/SL context wiring.
+
+This repo previously had a different class layout; this script is kept as a lightweight
+sanity check that `RawDataIngestion.build_context()` produces bounded TP/SL fields.
 """
-import sys
+
 import os
+import sys
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from gemini_client import GeminiClient
-from raw_data_engine import RawDataEngine
-from trading_bot import TradingBot
-from config import MARKET_SYMBOL, CAPITAL_USD
+from raw_data_engine import RawDataIngestion
 
-def test_dynamic_tp_sl():
-    """Test the dynamic TP/SL functionality"""
-    print("Testing dynamic TP/SL implementation...")
 
-    # Initialize components
-    gemini = GeminiClient()
-    data_engine = RawDataEngine()
-    bot = TradingBot()
-
-    # Build context (this should include tp_sl_recommendation)
+def test_dynamic_tp_sl_context() -> bool:
     print("Building context...")
-    context = data_engine.build_context()
-    print(f"Context keys: {list(context.keys())}")
+    engine = RawDataIngestion()
+    context = engine.build_context(symbol="BRENTUSD")
 
-    if 'tp_sl_recommendation' not in context:
-        print("ERROR: tp_sl_recommendation not found in context!")
+    tp_sl = context.get("tp_sl_recommendation")
+    if not isinstance(tp_sl, dict):
+        print("ERROR: tp_sl_recommendation missing or not a dict")
         return False
 
-    tp_sl = context['tp_sl_recommendation']
-    print(f"Dynamic TP/SL: {tp_sl}")
+    tp = tp_sl.get("take_profit_percentage")
+    sl = tp_sl.get("stop_loss_percentage")
+    print(f"TP/SL recommendation: {tp_sl}")
 
-    # Test trade execution with dynamic levels
-    print("Testing trade execution with dynamic TP/SL...")
+    ok = True
+    if not isinstance(tp, (int, float)) or not (0.1 <= float(tp) <= 5.0):
+        print(f"ERROR: take_profit_percentage out of bounds: {tp}")
+        ok = False
+    if not isinstance(sl, (int, float)) or not (0.1 <= float(sl) <= 2.0):
+        print(f"ERROR: stop_loss_percentage out of bounds: {sl}")
+        ok = False
 
-    # Simulate a buy signal
-    signal = {
-        'direction': 'buy',
-        'confidence': 0.8,
-        'price': 85.50,
-        'timestamp': '2024-01-15T10:00:00Z'
-    }
+    return ok
 
-    try:
-        # This should use the dynamic TP/SL from context
-        result = bot.execute_trade(signal, context)
-        print(f"Trade execution result: {result}")
-        return True
-    except Exception as e:
-        print(f"ERROR in trade execution: {e}")
-        return False
 
 if __name__ == "__main__":
-    success = test_dynamic_tp_sl()
-    if success:
-        print("✅ Dynamic TP/SL test passed!")
-    else:
-        print("❌ Dynamic TP/SL test failed!")
+    success = test_dynamic_tp_sl_context()
+    raise SystemExit(0 if success else 1)

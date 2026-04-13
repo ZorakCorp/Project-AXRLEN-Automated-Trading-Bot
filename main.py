@@ -24,6 +24,7 @@ def train(args):
 
 def run(_: argparse.Namespace):
     client = HyperliquidClient()
+    client.validate_tradable_symbol()
     bot = TradeManager(client)
     bot.run()
 
