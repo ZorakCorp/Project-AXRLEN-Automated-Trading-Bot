@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -22,13 +23,14 @@ class GeminiClient:
     @staticmethod
     def _build_session() -> requests.Session:
         session = requests.Session()
+        # Only retry on connection/read failures at the transport layer.
+        # HTTP 429/503 status retries are handled explicitly in call() so that
+        # each attempt can be logged and backed off with the correct delay.
         retry = Retry(
             total=3,
             connect=3,
             read=3,
-            status=3,
             backoff_factor=0.5,
-            status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset({"POST"}),
             raise_on_status=False,
         )
@@ -64,6 +66,13 @@ class GeminiClient:
                         return part.get("text", "")
         return ""
 
+    # Status codes that warrant a retry with exponential backoff.
+    _RETRYABLE_STATUSES = {429, 503}
+    # Status codes that are permanent client errors and should never be retried.
+    _PERMANENT_ERROR_STATUSES = {400, 401, 403}
+    # Maximum number of retry attempts after the initial request.
+    _MAX_RETRIES = 4
+
     def call(self, system_prompt: str, user_message: str, model: Optional[str] = None, timeout: int = 30) -> Any:
         model_name = model or self.model
         # Some Gemini API responses include fully-qualified model names like "models/xyz".
@@ -85,12 +94,58 @@ class GeminiClient:
                 "maxOutputTokens": 1024
             }
         }
-        response = self._session.post(endpoint, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout)
-        if response.status_code == 404 and model_name != "gemini-flash-latest":
-            # Model names change over time. Retry once with a stable alias.
-            fallback = "gemini-flash-latest"
-            endpoint = f"{self.base_url}/models/{fallback}:generateContent?key={self.api_key}"
-            response = self._session.post(endpoint, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout)
+
+        response = None
+        for attempt in range(self._MAX_RETRIES + 1):
+            response = self._session.post(
+                endpoint,
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+
+            # One-time model-name fallback: if the model is not found, swap to a
+            # stable alias and restart the retry loop from the top.
+            if response.status_code == 404 and model_name != "gemini-flash-latest":
+                logger.warning(
+                    "Model '%s' not found (404). Falling back to gemini-flash-latest.",
+                    model_name,
+                )
+                model_name = "gemini-flash-latest"
+                endpoint = f"{self.base_url}/models/{model_name}:generateContent?key={self.api_key}"
+                response = self._session.post(
+                    endpoint,
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                    timeout=timeout,
+                )
+
+            # Permanent client errors — do not retry.
+            if response.status_code in self._PERMANENT_ERROR_STATUSES:
+                break
+
+            # Transient server errors — retry with exponential backoff.
+            if response.status_code in self._RETRYABLE_STATUSES:
+                if attempt < self._MAX_RETRIES:
+                    wait = 2 ** attempt  # 1s, 2s, 4s, 8s
+                    logger.warning(
+                        "Gemini API returned %d (attempt %d/%d). Retrying in %ds…",
+                        response.status_code,
+                        attempt + 1,
+                        self._MAX_RETRIES,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                # All retries exhausted — fall through to error handling below.
+                logger.error(
+                    "Gemini API returned %d after %d retries. Giving up.",
+                    response.status_code,
+                    self._MAX_RETRIES,
+                )
+
+            # Success or non-retryable error — exit the loop.
+            break
 
         if response.status_code >= 400:
             # Parse the error body as JSON when possible so callers receive a
@@ -107,6 +162,7 @@ class GeminiClient:
             raise RuntimeError(
                 f"Gemini API error {response.status_code}: {err_msg}"
             )
+
         data = response.json()
         text = self._extract_text(data)
         if text:
