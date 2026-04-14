@@ -58,7 +58,7 @@ class RawDataIngestion:
         try:
             return self.gemini.interpret_leader_dasha(leader_context)
         except RuntimeError as e:
-            logger.warning("Gemini API unavailable for leader interpretation (%s). Using dummy data.", str(e))
+            logger.warning("Gemini API failed for leader interpretation after all retries (%s). Falling back to dummy data.", str(e))
             return {
                 "likely_action": "maintain_cuts",
                 "probability": 75,
@@ -71,7 +71,7 @@ class RawDataIngestion:
         try:
             return self.gemini.macro_bias_statement(macro_context)
         except RuntimeError as e:
-            logger.warning("Gemini API unavailable for macro bias (%s). Using dummy data.", str(e))
+            logger.warning("Gemini API failed for macro bias after all retries (%s). Falling back to dummy data.", str(e))
             return {
                 "statement": "Astrological signals indicate bullish conditions (dummy data)",
                 "direction": "bullish",
@@ -83,7 +83,7 @@ class RawDataIngestion:
         try:
             return self.gemini.calibration_diagnostic(report)
         except RuntimeError as e:
-            logger.warning("Gemini API unavailable for calibration analysis (%s). Using dummy data.", str(e))
+            logger.warning("Gemini API failed for calibration analysis after all retries (%s). Falling back to dummy data.", str(e))
             return {
                 "diagnostic_summary": "Calibration analysis unavailable (dummy data)",
                 "weight_adjustments": [],
@@ -121,7 +121,7 @@ class RawDataIngestion:
             tp_sl = self.gemini.get_tp_sl_levels(context)
             context["tp_sl_recommendation"] = tp_sl
         except Exception as e:
-            logger.warning(f"Gemini API failed for TP/SL levels: {e}. Using default levels.")
+            logger.warning("Gemini API failed for TP/SL levels after all retries (%s). Falling back to default levels.", str(e))
             context["tp_sl_recommendation"] = {
                 "take_profit_percentage": 0.5,
                 "stop_loss_percentage": 0.3,
