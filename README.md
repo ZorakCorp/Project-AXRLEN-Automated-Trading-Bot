@@ -74,7 +74,7 @@ Core:
 Gemini:
 - `GEMINI_API_KEY=<your key>`
 - `GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta`
-- `GEMINI_API_MODEL=gemini-1.5-flash`
+- `GEMINI_API_MODEL=gemini-2.5-flash`
 
 Hyperliquid:
 - `HYPERLIQUID_WALLET_ADDRESS=<0x...>`
@@ -87,6 +87,9 @@ Safety (start safe, then loosen only if you understand the risks):
 - `MAX_NOTIONAL_PCT=0.10`
 - `MAX_LEVERAGE=10`
 - `ALLOW_UNPROTECTED_POSITIONS=false`
+
+Optional gates:
+- `DISABLE_RED_DAY_GATE=true` (disables the astrology “red day” trading halt)
 
 State/logging (optional):
 - `BOT_STATE_PATH=bot_state.json`

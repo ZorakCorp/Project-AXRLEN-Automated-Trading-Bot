@@ -17,7 +17,9 @@ HYPERLIQUID_API_SECRET = os.getenv("HYPERLIQUID_API_SECRET", "")
 HYPERLIQUID_WALLET_ADDRESS = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_BASE = os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta")
-GEMINI_API_MODEL = os.getenv("GEMINI_API_MODEL", "gemini-1.5-flash")
+# Google has retired/renamed models over time. Default to a newer Flash model.
+# Users can override via GEMINI_API_MODEL in Railway variables.
+GEMINI_API_MODEL = os.getenv("GEMINI_API_MODEL", "gemini-2.5-flash")
 MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "ETH")
 CAPITAL_USD = float(os.getenv("CAPITAL_USD", "100000"))
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")

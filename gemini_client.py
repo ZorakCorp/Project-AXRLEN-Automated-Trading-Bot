@@ -66,6 +66,9 @@ class GeminiClient:
 
     def call(self, system_prompt: str, user_message: str, model: Optional[str] = None, timeout: int = 30) -> Any:
         model_name = model or self.model
+        # Some Gemini API responses include fully-qualified model names like "models/xyz".
+        # Normalize to avoid "models/models/..." mistakes.
+        model_name = model_name.replace("models/", "")
         endpoint = f"{self.base_url}/models/{model_name}:generateContent?key={self.api_key}"
         payload = {
             "contents": [
@@ -83,6 +86,12 @@ class GeminiClient:
             }
         }
         response = self._session.post(endpoint, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout)
+        if response.status_code == 404 and model_name != "gemini-flash-latest":
+            # Model names change over time. Retry once with a stable alias.
+            fallback = "gemini-flash-latest"
+            endpoint = f"{self.base_url}/models/{fallback}:generateContent?key={self.api_key}"
+            response = self._session.post(endpoint, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout)
+
         if response.status_code >= 400:
             # Don't leak request details; return concise error context.
             raise RuntimeError(f"Gemini API request failed (status={response.status_code}): {response.text[:500]}")

@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime
 from typing import Dict, List
 
@@ -46,6 +47,9 @@ class EphemerisEngine:
 
     def get_red_day(self) -> bool:
         """Determine if today is a Red Day (trading halt day)."""
+        override = os.getenv("DISABLE_RED_DAY_GATE", "").strip().lower()
+        if override in {"1", "true", "yes", "y", "on"}:
+            return False
         # Simplified: Red Day on full moon or new moon
         moon_phase = self._get_moon_phase()
         return moon_phase in ["Full Moon", "New Moon"]
