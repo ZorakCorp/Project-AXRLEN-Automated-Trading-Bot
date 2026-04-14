@@ -6,7 +6,7 @@ Automated trading bot framework (Hyperliquid + Gemini) with safety-first default
 
 - **Signal engine** that outputs `LONG` / `SHORT` / `FLAT`
 - **Risk sizing** with notional caps
-- **Execution adapter** for Hyperliquid (currently contains **placeholder assumptions** and is locked down for safety)
+- **Execution adapter** for Hyperliquid (uses the official `hyperliquid-python-sdk`)
 - **Gemini integration** for structured signal/context enrichment (JSON-only outputs)
 
 ## Safety model (read this)
@@ -14,9 +14,9 @@ Automated trading bot framework (Hyperliquid + Gemini) with safety-first default
 - **Dry-run by default**: the bot will not place real orders unless `LIVE_TRADING=true`.
 - **Live trading is locked**: even if `LIVE_TRADING=true`, the bot refuses to trade unless you explicitly set `HYPERLIQUID_EXECUTION_VERIFIED=true`.
 - **No “fake success”**: if a live order fails, the bot raises instead of pretending it executed.
-- **Protective orders are not guaranteed**: TP/SL are computed, but this repo does not guarantee they are enforced on-exchange. By default the bot will refuse to place live orders unless you explicitly set `ALLOW_UNPROTECTED_POSITIONS=true`.
+- **Protective orders**: when TP/SL are provided, the bot places reduce-only trigger TP/SL orders on Hyperliquid using the SDK.
 
-## Setup
+## Local setup (optional)
 
 1) Copy `.env.example` to `.env` and fill in values.
 
@@ -32,7 +32,92 @@ python -m pip install -r requirements.txt
 python main.py run
 ```
 
-## Key environment variables
+## Deploy on Railway (recommended)
+
+Railway is the simplest way to run this bot 24/7 without installing Python locally. This repo includes a `Dockerfile` and `railway.toml`.
+
+### Step 1: Create a Gemini API key
+
+1) Go to Google AI Studio: [Google AI Studio](https://makersuite.google.com/app/apikey)
+2) Click **Create API key**.
+3) Copy the key value.
+
+Notes:
+- Gemini pricing/credits change over time. Some accounts have free tier and/or promotional credits, but **do not assume a guaranteed $300 credit**—check Google’s current pricing/credits page in your account.
+- Treat the key like a password. Don’t commit it to git, don’t paste it into chats.
+
+### Step 2: Create Hyperliquid API credentials
+
+1) Sign in to Hyperliquid: [Hyperliquid](https://hyperliquid.xyz/)
+2) In the app, go to **API** settings and create an **API wallet / API key** (Hyperliquid terminology varies by UI version).
+3) You will need:
+   - your main wallet address (public) as `HYPERLIQUID_WALLET_ADDRESS`
+   - the API wallet **private key** as `HYPERLIQUID_API_SECRET`
+
+### Step 3: Create a Railway project
+
+1) Go to [Railway](https://railway.app/)
+2) Create a **New Project**
+3) Choose **Deploy from GitHub repo**
+4) Select your repo (e.g. `shep95/Aureon_Automated_Trading_Bot`)
+
+Railway will detect the `Dockerfile` and build it automatically.
+
+### Step 4: Add environment variables in Railway
+
+In Railway, open your service → **Variables** → add:
+
+Core:
+- `MARKET_SYMBOL=ETH`
+- `CAPITAL_USD=100000`
+
+Gemini:
+- `GEMINI_API_KEY=<your key>`
+- `GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta`
+- `GEMINI_API_MODEL=gemini-1.5-flash`
+
+Hyperliquid:
+- `HYPERLIQUID_WALLET_ADDRESS=<0x...>`
+- `HYPERLIQUID_API_SECRET=<0x... private key>`
+- `HYPERLIQUID_API_BASE=https://api.hyperliquid.xyz`
+
+Safety (start safe, then loosen only if you understand the risks):
+- `LIVE_TRADING=false`
+- `HYPERLIQUID_EXECUTION_VERIFIED=false`
+- `MAX_NOTIONAL_PCT=0.10`
+- `MAX_LEVERAGE=10`
+- `ALLOW_UNPROTECTED_POSITIONS=false`
+
+State/logging (optional):
+- `BOT_STATE_PATH=bot_state.json`
+- `BOT_JOURNAL_PATH=bot_journal.jsonl`
+
+### Step 5: First run in dry-run
+
+Leave:
+- `LIVE_TRADING=false`
+
+Deploy. Then check Railway logs. You should see a startup summary and periodic evaluations.
+
+### Step 6: Enable live trading (only after you confirm everything)
+
+When you are ready:
+
+1) Set:
+   - `HYPERLIQUID_EXECUTION_VERIFIED=true`
+2) Set:
+   - `LIVE_TRADING=true`
+
+If you want to force the bot to trade *without* protective TP/SL (not recommended), you must also set:
+- `ALLOW_UNPROTECTED_POSITIONS=true`
+
+## Troubleshooting
+
+- **Docker builds but Gemini fails**: confirm `GEMINI_API_KEY` is valid and enabled in your Google project.
+- **Hyperliquid refuses live trading**: confirm `HYPERLIQUID_EXECUTION_VERIFIED=true` and your wallet/secret are correct.
+- **Nothing happens**: the bot may classify `FLAT` and skip trades; check logs for `classification`.
+
+## Key environment variables (reference)
 
 - `MARKET_SYMBOL` (recommended: `ETH`)
 - `CAPITAL_USD`

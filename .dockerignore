@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+.venv/
+venv/
+*.log
+bot_state.json
+bot_journal.jsonl
+model.joblib
+.git/
