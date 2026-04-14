@@ -93,8 +93,20 @@ class GeminiClient:
             response = self._session.post(endpoint, headers={"Content-Type": "application/json"}, json=payload, timeout=timeout)
 
         if response.status_code >= 400:
-            # Don't leak request details; return concise error context.
-            raise RuntimeError(f"Gemini API request failed (status={response.status_code}): {response.text[:500]}")
+            # Parse the error body as JSON when possible so callers receive a
+            # clean string rather than raw JSON embedded in the message.
+            try:
+                err_body = response.json()
+                err_msg = (
+                    err_body.get("error", {}).get("message")
+                    or err_body.get("error", {}).get("status")
+                    or str(err_body)
+                )
+            except Exception:
+                err_msg = response.text[:200]
+            raise RuntimeError(
+                f"Gemini API error {response.status_code}: {err_msg}"
+            )
         data = response.json()
         text = self._extract_text(data)
         if text:
