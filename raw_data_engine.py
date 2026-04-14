@@ -57,30 +57,38 @@ class RawDataIngestion:
         logger.debug("Interpreting leader Dasha context through Gemini")
         try:
             return self.gemini.interpret_leader_dasha(leader_context)
-        except Exception as e:
-            logger.warning(f"Gemini API failed for leader interpretation: {e}. Using dummy data.")
+        except RuntimeError as e:
+            logger.warning("Gemini API unavailable for leader interpretation (%s). Using dummy data.", str(e))
             return {
                 "likely_action": "maintain_cuts",
                 "probability": 75,
                 "risk_category": "supply_cut",
-                "one_sentence_summary": "OPEC leadership favors continued supply discipline (dummy data)"
+                "summary": "OPEC leadership favors continued supply discipline (dummy data)",
             }
 
     def generate_macro_bias(self, macro_context: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug("Generating daily macro bias statement through Gemini")
         try:
             return self.gemini.macro_bias_statement(macro_context)
-        except Exception as e:
-            logger.warning(f"Gemini API failed for macro bias: {e}. Using dummy data.")
+        except RuntimeError as e:
+            logger.warning("Gemini API unavailable for macro bias (%s). Using dummy data.", str(e))
             return {
-                'direction': 'bullish',
-                'confidence': 8,
-                'reason': 'Astrological signals indicate bullish conditions (dummy data)'
+                "statement": "Astrological signals indicate bullish conditions (dummy data)",
+                "direction": "bullish",
+                "confidence": 8,
             }
 
     def run_calibration_analysis(self, report: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug("Running monthly calibration analysis through Gemini")
-        return self.gemini.calibration_diagnostic(report)
+        try:
+            return self.gemini.calibration_diagnostic(report)
+        except RuntimeError as e:
+            logger.warning("Gemini API unavailable for calibration analysis (%s). Using dummy data.", str(e))
+            return {
+                "diagnostic_summary": "Calibration analysis unavailable (dummy data)",
+                "weight_adjustments": [],
+                "recommendation_level": "low",
+            }
 
     def flash_scout(self, query: str, dataset_context: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug("Running Gemini Flash scout for historical precedents")
