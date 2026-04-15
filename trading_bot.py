@@ -148,6 +148,14 @@ class HyperliquidClient:
         idempotency_key: Optional[str] = None,
     ) -> dict:
         """Place live order on Hyperliquid via REST API"""
+        if leverage > MAX_LEVERAGE:
+            logger.warning(
+                "Requested leverage %s exceeds MAX_LEVERAGE=%s; clamping to MAX_LEVERAGE",
+                leverage,
+                MAX_LEVERAGE,
+            )
+            leverage = MAX_LEVERAGE
+
         if not LIVE_TRADING:
             # Explicit dry-run mode: never silently place real orders.
             logger.warning(
@@ -169,9 +177,6 @@ class HyperliquidClient:
             }
 
         self.validate_tradable_symbol()
-
-        if leverage > MAX_LEVERAGE:
-            raise ValueError(f"Requested leverage {leverage} exceeds MAX_LEVERAGE={MAX_LEVERAGE}")
 
         if self.exchange is None or self.info is None:
             raise RuntimeError("Hyperliquid exchange client not initialized.")
@@ -503,6 +508,15 @@ class TradeManager:
         )
         side = "buy" if classification == "LONG" else "sell"
         idempotency_key = str(uuid.uuid4())
+        requested_leverage = int(os.getenv("ORDER_LEVERAGE", "25"))
+        leverage = min(max(1, requested_leverage), MAX_LEVERAGE)
+        if leverage != requested_leverage:
+            logger.warning(
+                "ORDER_LEVERAGE=%s is outside allowed range; using leverage=%s (MAX_LEVERAGE=%s)",
+                requested_leverage,
+                leverage,
+                MAX_LEVERAGE,
+            )
 
         logger.info(
             "Submitting %s order, size=%s, stop=%s, tp=%s, idempotency=%s",
@@ -533,7 +547,7 @@ class TradeManager:
             size_usd=position_size,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            leverage=25,
+            leverage=leverage,
             idempotency_key=idempotency_key,
         )
         self.active_position = result
