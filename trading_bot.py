@@ -343,220 +343,6 @@ class HyperliquidClient:
             "response": result,
         }
 
-    def place_entry_limit(
-        self,
-        *,
-        side: str,
-        size_usd: float,
-        limit_price: float,
-        leverage: int,
-        idempotency_key: Optional[str] = None,
-    ) -> dict:
-        """
-        Place a resting limit entry order (no TP/SL attached).
-        The TradeManager is responsible for adding TP/SL after the position is confirmed open.
-        """
-        if leverage > MAX_LEVERAGE:
-            logger.warning(
-                "Requested leverage %s exceeds MAX_LEVERAGE=%s; clamping to MAX_LEVERAGE",
-                leverage,
-                MAX_LEVERAGE,
-            )
-            leverage = MAX_LEVERAGE
-
-        if not LIVE_TRADING:
-            logger.warning(
-                "DRY_RUN: LIVE_TRADING is disabled; simulating resting %s limit entry size_usd=%s at px=%s for %s",
-                side,
-                size_usd,
-                limit_price,
-                MARKET_SYMBOL,
-            )
-            return {
-                "order_id": f"dryrun_entry_{idempotency_key or str(uuid.uuid4())[:8]}",
-                "status": "simulated",
-                "symbol": MARKET_SYMBOL,
-                "side": side,
-                "leverage": leverage,
-                "size_usd": float(size_usd),
-                "limit_price": float(limit_price),
-                "dry_run": True,
-            }
-
-        self.validate_tradable_symbol()
-        if self.exchange is None or self.info is None:
-            raise RuntimeError("Hyperliquid exchange client not initialized.")
-
-        coin = MARKET_SYMBOL
-        asset = self.info.name_to_asset(coin)
-
-        mids = self.info.all_mids()
-        mid = float(mids[self.info.name_to_coin[coin]])
-        sz = float(size_usd) / max(mid, 1e-9)
-        sz_decimals = int(self.info.asset_to_sz_decimals[asset])
-        sz = float(f"{sz:.{sz_decimals}f}")
-        if sz <= 0:
-            raise ValueError("Calculated order size is zero after rounding.")
-
-        is_buy = side.lower() == "buy"
-        self.exchange.update_leverage(leverage=leverage, name=coin, is_cross=True)
-
-        # Reuse the same tick/side-safe quantization logic as place_order.
-        max_decimals = 6  # perps default
-        sz_decimals_map = {}
-        try:
-            meta = self.info.meta()
-            for asset_info in (meta.get("universe", []) if isinstance(meta, dict) else []):
-                if isinstance(asset_info, dict) and "name" in asset_info and "szDecimals" in asset_info:
-                    sz_decimals_map[str(asset_info["name"])] = int(asset_info["szDecimals"])
-        except Exception:
-            sz_decimals_map = {}
-
-        def _px_decimals() -> int:
-            sz_decimals_for_coin = int(sz_decimals_map.get(coin, 0))
-            return max(0, max_decimals - sz_decimals_for_coin)
-
-        def _tick_size() -> Decimal:
-            return Decimal(1).scaleb(-_px_decimals())
-
-        def _round_px(value: float) -> float:
-            px_val = float(value)
-            if px_val > 100_000:
-                return float(round(px_val))
-            return round(float(f"{px_val:.5g}"), _px_decimals())
-
-        def _quantize_to_tick(value: float, *, rounding: str) -> float:
-            v = Decimal(str(float(value)))
-            tick = _tick_size()
-            if tick == 0:
-                return float(value)
-            scaled = v / tick
-            if rounding == "floor":
-                q = scaled.to_integral_value(rounding=ROUND_FLOOR) * tick
-            else:
-                q = scaled.to_integral_value(rounding=ROUND_CEILING) * tick
-            return float(q)
-
-        px = _round_px(float(limit_price))
-        px = _quantize_to_tick(px, rounding=("ceil" if is_buy else "floor"))
-
-        result = self.exchange.order(coin, is_buy, sz, px, {"limit": {"tif": "Gtc"}})
-
-        if isinstance(result, dict) and result.get("status") == "ok":
-            statuses = (((result.get("response") or {}).get("data") or {}).get("statuses")) if isinstance(result.get("response"), dict) else None
-            if isinstance(statuses, list) and statuses:
-                first = statuses[0]
-                if isinstance(first, dict) and first.get("error"):
-                    raise RuntimeError(f"Hyperliquid entry order rejected: {str(first.get('error'))[:500]}")
-
-        resting_oid = None
-        try:
-            statuses = (((result.get("response") or {}).get("data") or {}).get("statuses")) if isinstance(result, dict) else None
-            if isinstance(statuses, list) and statuses:
-                st = statuses[0]
-                if isinstance(st, dict) and isinstance(st.get("resting"), dict):
-                    resting_oid = st["resting"].get("oid")
-        except Exception:
-            resting_oid = None
-
-        return {
-            "order_id": f"hl_entry_{idempotency_key or str(uuid.uuid4())[:8]}",
-            "status": "resting" if resting_oid is not None else "submitted",
-            "symbol": coin,
-            "side": side,
-            "leverage": leverage,
-            "size_usd": float(size_usd),
-            "size_coin": float(sz),
-            "limit_price": float(px),
-            "resting_oid": resting_oid,
-            "response": result,
-        }
-
-    def place_protection_orders(
-        self,
-        *,
-        side: str,
-        size_coin: float,
-        stop_loss: float,
-        take_profit: float,
-    ) -> dict:
-        """Place reduce-only TP/SL trigger orders for an existing position."""
-        if not LIVE_TRADING:
-            return {"status": "dry_run", "note": "protection orders skipped in dry-run"}
-        if self.exchange is None or self.info is None:
-            raise RuntimeError("Hyperliquid exchange client not initialized.")
-
-        coin = MARKET_SYMBOL
-        is_buy = side.lower() == "buy"
-
-        # Use the same tick-safe rounding as in place_order.
-        max_decimals = 6
-        sz_decimals_map = {}
-        try:
-            meta = self.info.meta()
-            for asset_info in (meta.get("universe", []) if isinstance(meta, dict) else []):
-                if isinstance(asset_info, dict) and "name" in asset_info and "szDecimals" in asset_info:
-                    sz_decimals_map[str(asset_info["name"])] = int(asset_info["szDecimals"])
-        except Exception:
-            sz_decimals_map = {}
-
-        def _px_decimals() -> int:
-            return max(0, max_decimals - int(sz_decimals_map.get(coin, 0)))
-
-        def _tick_size() -> Decimal:
-            return Decimal(1).scaleb(-_px_decimals())
-
-        def _round_px(value: float) -> float:
-            px_val = float(value)
-            if px_val > 100_000:
-                return float(round(px_val))
-            return round(float(f"{px_val:.5g}"), _px_decimals())
-
-        def _quantize_to_tick(value: float, *, rounding: str) -> float:
-            v = Decimal(str(float(value)))
-            tick = _tick_size()
-            if tick == 0:
-                return float(value)
-            scaled = v / tick
-            if rounding == "floor":
-                q = scaled.to_integral_value(rounding=ROUND_FLOOR) * tick
-            else:
-                q = scaled.to_integral_value(rounding=ROUND_CEILING) * tick
-            return float(q)
-
-        sl_px = _quantize_to_tick(_round_px(float(stop_loss)), rounding=("floor" if is_buy else "ceil"))
-        tp_px = _quantize_to_tick(_round_px(float(take_profit)), rounding=("ceil" if is_buy else "floor"))
-
-        orders = [
-            {
-                "coin": coin,
-                "is_buy": (not is_buy),
-                "sz": float(size_coin),
-                "limit_px": float(sl_px),
-                "order_type": {"trigger": {"triggerPx": float(sl_px), "isMarket": True, "tpsl": "sl"}},
-                "reduce_only": True,
-            },
-            {
-                "coin": coin,
-                "is_buy": (not is_buy),
-                "sz": float(size_coin),
-                "limit_px": float(tp_px),
-                "order_type": {"trigger": {"triggerPx": float(tp_px), "isMarket": True, "tpsl": "tp"}},
-                "reduce_only": True,
-            },
-        ]
-        result = self.exchange.bulk_orders(orders, grouping="normalTpsl")
-        if isinstance(result, dict) and result.get("status") == "ok":
-            statuses = (((result.get("response") or {}).get("data") or {}).get("statuses")) if isinstance(result.get("response"), dict) else None
-            if isinstance(statuses, list):
-                errors = []
-                for st in statuses:
-                    if isinstance(st, dict) and st.get("error"):
-                        errors.append(str(st.get("error")))
-                if errors:
-                    raise RuntimeError(f"Hyperliquid protection orders rejected: {'; '.join(errors)[:500]}")
-        return {"status": "ok", "response": result, "stop_loss": float(sl_px), "take_profit": float(tp_px)}
-
     def get_positions(self) -> dict:
         """Get user positions via REST API"""
         if not LIVE_TRADING:
@@ -595,13 +381,6 @@ class HyperliquidClient:
         resp = self.exchange.market_close(coin)
         return {"status": "closed", "position_id": position_id, "response": resp}
 
-    def cancel_order(self, *, coin: str, oid: int) -> dict:
-        if not LIVE_TRADING:
-            return {"status": "dry_run", "coin": coin, "oid": oid}
-        if self.exchange is None:
-            raise RuntimeError("Hyperliquid exchange client not initialized.")
-        return self.exchange.cancel(coin, oid)
-
 
 class TradeManager:
     def __init__(self, client: HyperliquidClient):
@@ -616,8 +395,6 @@ class TradeManager:
         self._shutdown_requested = False
         self.last_trade_closed_at_ts = 0  # unix seconds
         self.last_order_submit_at_ts = 0  # unix seconds (prevents duplicate submits)
-        self.pending_entry = None  # {created_at_ts, side, size_usd, limit_price, resting_oid, stop_loss, take_profit, size_coin?}
-        self.protection_placed_for_entry_id = ""  # idempotency marker for protections after limit fill
 
         self.state_path = os.getenv("BOT_STATE_PATH", "bot_state.json")
         self.journal_path = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
@@ -684,8 +461,6 @@ class TradeManager:
         self.weekly_loss = float(state.get("weekly_loss", 0.0) or 0.0)
         self.trade_log = list(state.get("trade_log", []) or [])
         self.active_position = state.get("active_position")
-        self.pending_entry = state.get("pending_entry")
-        self.protection_placed_for_entry_id = str(state.get("protection_placed_for_entry_id", "") or "")
         try:
             self.last_trade_closed_at_ts = int(state.get("last_trade_closed_at_ts", 0) or 0)
         except Exception:
@@ -712,8 +487,6 @@ class TradeManager:
             "active_position": self.active_position,
             "last_trade_closed_at_ts": int(self.last_trade_closed_at_ts),
             "last_order_submit_at_ts": int(self.last_order_submit_at_ts),
-            "pending_entry": self.pending_entry,
-            "protection_placed_for_entry_id": self.protection_placed_for_entry_id,
         }
         try:
             save_json(self.state_path, state)
@@ -816,11 +589,6 @@ class TradeManager:
             self.monitor_position()
             return
 
-        if self.pending_entry:
-            logger.info("Pending entry order exists, checking fill/timeout")
-            self.monitor_pending_entry()
-            return
-
         if classification == "FLAT":
             logger.info("Market state is FLAT, observation only")
             return
@@ -908,32 +676,6 @@ class TradeManager:
                 "live_trading": LIVE_TRADING,
             },
         )
-        entry_mode = os.getenv("ENTRY_ORDER_MODE", "immediate").strip().lower()
-        if entry_mode == "limit_wait":
-            offset_pct = float(os.getenv("ENTRY_LIMIT_OFFSET_PCT", "0.00"))
-            limit_px = last_price * (1 - offset_pct / 100.0) if side == "buy" else last_price * (1 + offset_pct / 100.0)
-            entry = self.client.place_entry_limit(
-                side=side,
-                size_usd=position_size,
-                limit_price=float(limit_px),
-                leverage=leverage,
-                idempotency_key=idempotency_key,
-            )
-            self.pending_entry = {
-                "id": idempotency_key,
-                "created_at_ts": int(time.time()),
-                "side": side,
-                "size_usd": float(position_size),
-                "limit_price": float(entry.get("limit_price", limit_px)),
-                "resting_oid": entry.get("resting_oid"),
-                "stop_loss": float(stop_loss),
-                "take_profit": float(take_profit),
-                "size_coin": float(entry.get("size_coin", 0.0) or 0.0),
-            }
-            self._save_state()
-            logger.info("Placed resting entry: %s", entry)
-            return
-
         result = self.client.place_order(
             side=side,
             size_usd=position_size,
@@ -971,54 +713,6 @@ class TradeManager:
             logger.info("Position closed by exchange: %s", latest.get("status"))
             self.active_position = None
 
-    def monitor_pending_entry(self) -> None:
-        pending = self.pending_entry or {}
-        created_at = int(pending.get("created_at_ts", 0) or 0)
-        entry_id = str(pending.get("id", "") or "")
-        now_ts = int(time.time())
-        wait_seconds = int(os.getenv("ENTRY_WAIT_SECONDS", "3600"))
-
-        # If position is open, attach protections once.
-        try:
-            positions = self.client.get_positions()
-            if positions.get("positions"):
-                latest = positions["positions"][0]
-                self.active_position = latest
-                self.pending_entry = None
-                self._save_state()
-
-                if entry_id and self.protection_placed_for_entry_id != entry_id:
-                    # Use position size from exchange if available; fallback to pending size_coin.
-                    size_coin = float(latest.get("size", 0) or 0)
-                    if size_coin == 0:
-                        size_coin = float(pending.get("size_coin", 0) or 0)
-                    if size_coin != 0:
-                        prot = self.client.place_protection_orders(
-                            side=str(pending.get("side", "buy") or "buy"),
-                            size_coin=abs(size_coin),
-                            stop_loss=float(pending.get("stop_loss")),
-                            take_profit=float(pending.get("take_profit")),
-                        )
-                        self.protection_placed_for_entry_id = entry_id
-                        self._save_state()
-                        logger.info("Placed TP/SL after entry fill: %s", prot)
-                return
-        except Exception as e:
-            logger.warning("Pending entry check failed: %s", str(e))
-
-        # Timeout: cancel resting order if we have an oid.
-        if created_at and wait_seconds > 0 and (now_ts - created_at) > wait_seconds:
-            oid = pending.get("resting_oid")
-            if oid is not None:
-                try:
-                    cancel_resp = self.client.cancel_order(coin=MARKET_SYMBOL, oid=int(oid))
-                    logger.info("Cancelled stale entry order oid=%s: %s", oid, cancel_resp)
-                except Exception as e:
-                    logger.warning("Failed to cancel stale entry oid=%s: %s", oid, str(e))
-            self.pending_entry = None
-            self._save_state()
-            logger.info("Entry wait timeout reached; cleared pending entry")
-
     def run(self, interval_seconds: int = 60):
         logger.info("Starting trade loop for %s", MARKET_SYMBOL)
         while True:
@@ -1027,8 +721,6 @@ class TradeManager:
                 # TP/SL closure at a slower cadence (default: hourly).
                 if self.active_position:
                     self.monitor_position()
-                elif self.pending_entry:
-                    self.monitor_pending_entry()
                 else:
                     probability, df, context = self.evaluate_market()
                     self.execute_signal(probability, df, context)
@@ -1065,12 +757,9 @@ class TradeManager:
             now_ts = int(time.time())
             active_check_seconds = int(os.getenv("ACTIVE_POSITION_CHECK_SECONDS", "3600"))
             post_trade_cooldown_seconds = int(os.getenv("POST_TRADE_COOLDOWN_SECONDS", "3600"))
-            pending_entry_check_seconds = int(os.getenv("ENTRY_CHECK_SECONDS", "60"))
 
             if self.active_position:
                 sleep_for = max(1, active_check_seconds)
-            elif self.pending_entry:
-                sleep_for = max(1, pending_entry_check_seconds)
             elif self.last_trade_closed_at_ts and post_trade_cooldown_seconds > 0:
                 remaining = (self.last_trade_closed_at_ts + post_trade_cooldown_seconds) - now_ts
                 sleep_for = max(1, min(remaining, post_trade_cooldown_seconds)) if remaining > 0 else interval_seconds

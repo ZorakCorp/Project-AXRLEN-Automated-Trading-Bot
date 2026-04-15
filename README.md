@@ -110,10 +110,6 @@ Execution (optional):
 - `ACTIVE_POSITION_CHECK_SECONDS=3600` (when a position is open, only check TP/SL closure once per hour)
 - `POST_TRADE_COOLDOWN_SECONDS=3600` (after a position closes, wait 1 hour before the next prediction/entry)
 - `ORDER_SUBMIT_COOLDOWN_SECONDS=120` (prevents duplicate order submissions)
-- `ENTRY_ORDER_MODE=immediate` (`immediate` enters right away; `limit_wait` places a resting limit entry and attaches TP/SL after fill)
-- `ENTRY_LIMIT_OFFSET_PCT=0.00` (for `limit_wait`: how far from current price to place the entry limit)
-- `ENTRY_WAIT_SECONDS=3600` (for `limit_wait`: cancel entry if not filled within this time)
-- `ENTRY_CHECK_SECONDS=60` (for `limit_wait`: poll cadence while waiting for fill)
 
 Optional gates:
 - `DISABLE_RED_DAY_GATE=true` (disables the astrology “red day” trading halt)
@@ -160,10 +156,6 @@ If you want to force the bot to trade *without* protective TP/SL (not recommende
 - `ACTIVE_POSITION_CHECK_SECONDS` (default `3600`)
 - `POST_TRADE_COOLDOWN_SECONDS` (default `3600`)
 - `ORDER_SUBMIT_COOLDOWN_SECONDS` (default `120`)
-- `ENTRY_ORDER_MODE` (default `immediate`)
-- `ENTRY_LIMIT_OFFSET_PCT` (default `0.00`)
-- `ENTRY_WAIT_SECONDS` (default `3600`)
-- `ENTRY_CHECK_SECONDS` (default `60`)
 
 State/logging:
 
