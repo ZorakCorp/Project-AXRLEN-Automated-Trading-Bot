@@ -2,6 +2,10 @@
 
 Automated trading bot framework (Hyperliquid + OpenAI) with safety-first defaults.
 
+## Attribution
+
+This was developed by `#HouseOfAsher` & Zorak Corp Research & Development team and open-sourced for all of humanity.
+
 ## What this repo is
 
 - **Signal engine** that outputs `LONG` / `SHORT` / `FLAT`
