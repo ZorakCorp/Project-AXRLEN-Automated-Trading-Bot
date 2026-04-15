@@ -114,6 +114,10 @@ Execution (optional):
 - `STOP_RECENT_LOOKBACK_CANDLES=50` (lookback window for swing detection)
 - `STOP_PIVOT_CANDLES=2` (pivot width for swing detection)
 - `STOP_RECENT_BUFFER_PCT=0.00` (optional buffer beyond swing extreme, in percent)
+- `FRACTAL_FILTER_ENABLED=true` (only allow AI trades when fractal alignment/confidence gates pass)
+- `FRACTAL_LOOKBACK=30`
+- `FRACTAL_MIN_FIDELITY=70.0`
+- `FRACTAL_MIN_CONFIDENCE=65.0`
 - `ENTRY_ORDER_MODE=immediate` (`immediate` enters right away; `limit_wait` places a resting limit entry and attaches TP/SL after fill)
 - `ENTRY_LIMIT_OFFSET_PCT=0.00` (for `limit_wait`: how far from current price to place the entry limit)
 - `ENTRY_USE_AI_OFFSET=true` (for `limit_wait`: if true, uses the AI-provided `entry_limit_offset_pct` instead of `ENTRY_LIMIT_OFFSET_PCT`)
@@ -169,6 +173,10 @@ If you want to force the bot to trade *without* protective TP/SL (not recommende
 - `STOP_RECENT_LOOKBACK_CANDLES` (default `50`)
 - `STOP_PIVOT_CANDLES` (default `2`)
 - `STOP_RECENT_BUFFER_PCT` (default `0.00`)
+- `FRACTAL_FILTER_ENABLED` (default `true`)
+- `FRACTAL_LOOKBACK` (default `30`)
+- `FRACTAL_MIN_FIDELITY` (default `70.0`)
+- `FRACTAL_MIN_CONFIDENCE` (default `65.0`)
 - `ENTRY_ORDER_MODE` (default `immediate`)
 - `ENTRY_LIMIT_OFFSET_PCT` (default `0.00`)
 - `ENTRY_USE_AI_OFFSET` (default `true`)

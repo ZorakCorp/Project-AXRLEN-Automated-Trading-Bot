@@ -34,6 +34,7 @@ from config import (
 from raw_data_engine import RawDataIngestion
 from signal_engine import RiskEngine, run_probability
 from state_store import append_jsonl, load_json, save_json
+from fractal_filter import compute_fractal_filter
 
 logger = logging.getLogger(__name__)
 
@@ -859,6 +860,48 @@ class TradeManager:
         if classification == "FLAT":
             logger.info("Market state is FLAT, observation only")
             return
+
+        # Optional: Fractal filter gate (TradingView "Nested Fractal" alignment/confidence port).
+        fractal_enabled = os.getenv("FRACTAL_FILTER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+        if fractal_enabled:
+            try:
+                fractal_lb = int(os.getenv("FRACTAL_LOOKBACK", "30"))
+                fractal_min_fidelity = float(os.getenv("FRACTAL_MIN_FIDELITY", "70.0"))
+                fractal_min_conf = float(os.getenv("FRACTAL_MIN_CONFIDENCE", "65.0"))
+                f = compute_fractal_filter(
+                    df,
+                    fractal_lookback=fractal_lb,
+                    min_fidelity=fractal_min_fidelity,
+                    min_confidence=fractal_min_conf,
+                )
+                context["fractal_filter"] = {
+                    "fidelity": f.fidelity,
+                    "confidence": f.confidence,
+                    "aligned": f.aligned,
+                    "trend_micro": f.trend_micro,
+                    "trend_meso": f.trend_meso,
+                    "trend_macro": f.trend_macro,
+                    "allow_long": f.allow_long,
+                    "allow_short": f.allow_short,
+                }
+                if classification == "LONG" and not f.allow_long:
+                    logger.info(
+                        "Fractal filter blocked LONG (confidence=%.1f fidelity=%.1f aligned=%s)",
+                        f.confidence,
+                        f.fidelity,
+                        str(f.aligned).lower(),
+                    )
+                    return
+                if classification == "SHORT" and not f.allow_short:
+                    logger.info(
+                        "Fractal filter blocked SHORT (confidence=%.1f fidelity=%.1f aligned=%s)",
+                        f.confidence,
+                        f.fidelity,
+                        str(f.aligned).lower(),
+                    )
+                    return
+            except Exception as e:
+                logger.warning("Fractal filter failed (%s); continuing without filter for this iteration.", str(e))
 
         red_day = context.get("red_day", False)
         if red_day:
