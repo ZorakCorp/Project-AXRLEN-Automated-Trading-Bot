@@ -185,17 +185,29 @@ class HyperliquidClient:
         mids = self.info.all_mids()
         mid = float(mids[self.info.name_to_coin[coin]])
         asset = self.info.name_to_asset(coin)
-        # Hyperliquid enforces price precision; sending unrounded prices can yield "invalid price".
-        px_decimals = 2
+        # Hyperliquid enforces tick size rules for prices:
+        # - up to 5 significant figures
+        # - no more than (MAX_DECIMALS - szDecimals) decimal places (MAX_DECIMALS=6 for perps, 8 for spot)
+        # - integer prices always allowed
+        # Ref: Hyperliquid docs + SDK examples/rounding.py
+        max_decimals = 6  # perps default
+        sz_decimals_map = {}
         try:
-            asset_to_px_decimals = getattr(self.info, "asset_to_px_decimals", None)
-            if isinstance(asset_to_px_decimals, dict) and asset in asset_to_px_decimals:
-                px_decimals = int(asset_to_px_decimals[asset])
+            meta = self.info.meta()
+            for asset_info in (meta.get("universe", []) if isinstance(meta, dict) else []):
+                if isinstance(asset_info, dict) and "name" in asset_info and "szDecimals" in asset_info:
+                    sz_decimals_map[str(asset_info["name"])] = int(asset_info["szDecimals"])
         except Exception:
-            px_decimals = 2
+            sz_decimals_map = {}
 
         def _round_px(value: float) -> float:
-            return float(f"{float(value):.{px_decimals}f}")
+            px_val = float(value)
+            if px_val > 100_000:
+                return float(round(px_val))
+            sz_decimals_for_coin = int(sz_decimals_map.get(coin, 0))
+            decimals = max(0, max_decimals - sz_decimals_for_coin)
+            # First limit to 5 significant figures, then enforce decimal places
+            return round(float(f"{px_val:.5g}"), decimals)
 
         sz = float(size_usd) / max(mid, 1e-9)
         sz_decimals = int(self.info.asset_to_sz_decimals[asset])
