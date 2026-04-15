@@ -865,7 +865,29 @@ class TradeManager:
             logger.info("Calculated position size is zero, skipping trade")
             return
 
-        stop_loss = round(last_price - stop_distance if classification == "LONG" else last_price + stop_distance, 2)
+        # Stop loss placement: by default use the most recent swing extreme (low for LONG / high for SHORT).
+        # This reduces the chance of rounding/tick rules pushing SL onto the wrong side of entry.
+        use_recent_extreme_stop = os.getenv("STOP_USE_RECENT_EXTREME", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+        stop_lookback = int(os.getenv("STOP_RECENT_LOOKBACK_CANDLES", "20"))
+        stop_buffer_pct = float(os.getenv("STOP_RECENT_BUFFER_PCT", "0.00"))
+
+        stop_loss = None
+        if use_recent_extreme_stop and {"low", "high"}.issubset(set(df.columns)) and len(df) > 0:
+            lookback_df = df.tail(max(1, stop_lookback))
+            try:
+                if classification == "LONG":
+                    recent_low = float(lookback_df["low"].min())
+                    stop_loss = recent_low * (1 - stop_buffer_pct / 100.0)
+                else:
+                    recent_high = float(lookback_df["high"].max())
+                    stop_loss = recent_high * (1 + stop_buffer_pct / 100.0)
+            except Exception:
+                stop_loss = None
+
+        if stop_loss is None:
+            stop_loss = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
+
+        stop_loss = round(float(stop_loss), 2)
         take_profit = round(
             last_price + last_price * (tp_percent / 100)
             if classification == "LONG"
