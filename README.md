@@ -103,6 +103,9 @@ Safety (start safe, then loosen only if you understand the risks):
 
 Execution (optional):
 - `ORDER_LEVERAGE=10` (requested order leverage; the bot clamps this to `MAX_LEVERAGE`)
+- `ACTIVE_POSITION_CHECK_SECONDS=3600` (when a position is open, only check TP/SL closure once per hour)
+- `POST_TRADE_COOLDOWN_SECONDS=3600` (after a position closes, wait 1 hour before the next prediction/entry)
+- `ORDER_SUBMIT_COOLDOWN_SECONDS=120` (prevents duplicate order submissions)
 
 Optional gates:
 - `DISABLE_RED_DAY_GATE=true` (disables the astrology “red day” trading halt)
@@ -146,6 +149,9 @@ If you want to force the bot to trade *without* protective TP/SL (not recommende
 - `MAX_NOTIONAL_PCT` (default `0.10`)
 - `MAX_LEVERAGE` (default `10`)
 - `ORDER_LEVERAGE` (default `25`, clamped to `MAX_LEVERAGE`)
+- `ACTIVE_POSITION_CHECK_SECONDS` (default `3600`)
+- `POST_TRADE_COOLDOWN_SECONDS` (default `3600`)
+- `ORDER_SUBMIT_COOLDOWN_SECONDS` (default `120`)
 
 State/logging:
 

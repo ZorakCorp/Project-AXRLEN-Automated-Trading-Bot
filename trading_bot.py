@@ -653,8 +653,13 @@ class TradeManager:
         logger.info("Starting trade loop for %s", MARKET_SYMBOL)
         while True:
             try:
-                probability, df, context = self.evaluate_market()
-                self.execute_signal(probability, df, context)
+                # When a position is open, do NOT re-evaluate constantly. We only poll for
+                # TP/SL closure at a slower cadence (default: hourly).
+                if self.active_position:
+                    self.monitor_position()
+                else:
+                    probability, df, context = self.evaluate_market()
+                    self.execute_signal(probability, df, context)
             except Exception as exc:
                 logger.exception("Error during trade loop: %s", exc)
                 append_jsonl(
@@ -680,4 +685,21 @@ class TradeManager:
                 )
                 logger.info("Shutdown complete.")
                 return
-            time.sleep(interval_seconds)
+
+            # Adaptive sleep:
+            # - If a position is open: check for TP/SL closure hourly.
+            # - If we're in post-trade cooldown: sleep until it expires (capped).
+            # - Otherwise: use the default evaluation cadence.
+            now_ts = int(time.time())
+            active_check_seconds = int(os.getenv("ACTIVE_POSITION_CHECK_SECONDS", "3600"))
+            post_trade_cooldown_seconds = int(os.getenv("POST_TRADE_COOLDOWN_SECONDS", "3600"))
+
+            if self.active_position:
+                sleep_for = max(1, active_check_seconds)
+            elif self.last_trade_closed_at_ts and post_trade_cooldown_seconds > 0:
+                remaining = (self.last_trade_closed_at_ts + post_trade_cooldown_seconds) - now_ts
+                sleep_for = max(1, min(remaining, post_trade_cooldown_seconds)) if remaining > 0 else interval_seconds
+            else:
+                sleep_for = interval_seconds
+
+            time.sleep(int(sleep_for))
