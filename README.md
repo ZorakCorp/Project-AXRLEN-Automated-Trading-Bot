@@ -112,7 +112,6 @@ Execution (optional):
 - `ORDER_SUBMIT_COOLDOWN_SECONDS=120` (prevents duplicate order submissions)
 - `ENTRY_ORDER_MODE=immediate` (`immediate` enters right away; `limit_wait` places a resting limit entry and attaches TP/SL after fill)
 - `ENTRY_LIMIT_OFFSET_PCT=0.00` (for `limit_wait`: how far from current price to place the entry limit)
-- `ENTRY_USE_AI_OFFSET=true` (for `limit_wait`: if true, uses the AI-provided `entry_limit_offset_pct` instead of `ENTRY_LIMIT_OFFSET_PCT`)
 - `ENTRY_WAIT_SECONDS=3600` (for `limit_wait`: cancel entry if not filled within this time)
 - `ENTRY_CHECK_SECONDS=60` (for `limit_wait`: poll cadence while waiting for fill)
 
@@ -163,7 +162,6 @@ If you want to force the bot to trade *without* protective TP/SL (not recommende
 - `ORDER_SUBMIT_COOLDOWN_SECONDS` (default `120`)
 - `ENTRY_ORDER_MODE` (default `immediate`)
 - `ENTRY_LIMIT_OFFSET_PCT` (default `0.00`)
-- `ENTRY_USE_AI_OFFSET` (default `true`)
 - `ENTRY_WAIT_SECONDS` (default `3600`)
 - `ENTRY_CHECK_SECONDS` (default `60`)
 

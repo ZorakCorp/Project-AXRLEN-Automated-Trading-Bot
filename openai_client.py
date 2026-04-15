@@ -207,11 +207,8 @@ class OpenAIClient:
         system_prompt = (
             "You are a professional trading risk manager. "
             "Return only JSON with no markdown or explanation. "
-            "Based on market context, determine optimal take profit and stop loss percentages, "
-            "AND a limit-entry offset suitable for waiting for a better fill. "
-            "The fields must be: "
-            "take_profit_percentage (0.1-5.0), stop_loss_percentage (0.1-2.0), "
-            "entry_limit_offset_pct (0.0-1.0), "
+            "Based on market context, determine optimal take profit and stop loss percentages. "
+            "The fields must be: take_profit_percentage (0.1-5.0), stop_loss_percentage (0.1-2.0), "
             "rationale (one sentence)."
         )
         user_message = f"Market context: {json.dumps(context)}"
@@ -227,11 +224,9 @@ class OpenAIClient:
 
         tp = _safe_float(result.get("take_profit_percentage", 0.5) if isinstance(result, dict) else 0.5, 0.5)
         sl = _safe_float(result.get("stop_loss_percentage", 0.3) if isinstance(result, dict) else 0.3, 0.3)
-        entry_offset = _safe_float(result.get("entry_limit_offset_pct", 0.0) if isinstance(result, dict) else 0.0, 0.0)
 
         tp = max(0.1, min(5.0, tp))
         sl = max(0.1, min(2.0, sl))
-        entry_offset = max(0.0, min(1.0, entry_offset))
 
         rationale = ""
         if isinstance(result, dict):
@@ -240,7 +235,6 @@ class OpenAIClient:
         return {
             "take_profit_percentage": tp,
             "stop_loss_percentage": sl,
-            "entry_limit_offset_pct": entry_offset,
             "rationale": rationale or "AI-determined levels",
         }
 

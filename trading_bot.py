@@ -853,10 +853,8 @@ class TradeManager:
         tp_sl = context.get("tp_sl_recommendation", {}) or {}
         tp_percent = float(tp_sl.get("take_profit_percentage", DEFAULT_TAKE_PROFIT_PCT) or DEFAULT_TAKE_PROFIT_PCT)
         sl_percent = float(tp_sl.get("stop_loss_percentage", DEFAULT_STOP_LOSS_PCT) or DEFAULT_STOP_LOSS_PCT)
-        ai_entry_offset_pct = float(tp_sl.get("entry_limit_offset_pct", 0.0) or 0.0)
         sl_percent = max(0.01, min(5.0, sl_percent))
         tp_percent = max(0.01, min(10.0, tp_percent))
-        ai_entry_offset_pct = max(0.0, min(1.0, ai_entry_offset_pct))
 
         stop_distance = self.calculate_stop_distance(df, sl_percent=sl_percent)
         position_size = self.risk_engine.position_size(score, stop_distance, last_price)
@@ -912,11 +910,7 @@ class TradeManager:
         )
         entry_mode = os.getenv("ENTRY_ORDER_MODE", "immediate").strip().lower()
         if entry_mode == "limit_wait":
-            use_ai_offset = os.getenv("ENTRY_USE_AI_OFFSET", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-            offset_pct_env = float(os.getenv("ENTRY_LIMIT_OFFSET_PCT", "0.00"))
-            offset_pct = ai_entry_offset_pct if use_ai_offset else offset_pct_env
-            # Bound safety
-            offset_pct = max(0.0, min(1.0, float(offset_pct)))
+            offset_pct = float(os.getenv("ENTRY_LIMIT_OFFSET_PCT", "0.00"))
             limit_px = last_price * (1 - offset_pct / 100.0) if side == "buy" else last_price * (1 + offset_pct / 100.0)
             entry = self.client.place_entry_limit(
                 side=side,
