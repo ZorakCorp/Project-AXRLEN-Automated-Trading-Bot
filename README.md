@@ -115,6 +115,7 @@ Execution (optional):
 - `STOP_PIVOT_CANDLES=2` (pivot width for swing detection)
 - `STOP_RECENT_BUFFER_PCT=0.00` (optional buffer beyond swing extreme, in percent)
 - `FRACTAL_FILTER_ENABLED=true` (only allow AI trades when fractal alignment/confidence gates pass)
+- `FRACTAL_GATE_CADENCE_SECONDS=3600` (run the fractal gate at most once per hour)
 - `FRACTAL_LOOKBACK=30`
 - `FRACTAL_MIN_FIDELITY=70.0`
 - `FRACTAL_MIN_CONFIDENCE=65.0`
@@ -174,6 +175,7 @@ If you want to force the bot to trade *without* protective TP/SL (not recommende
 - `STOP_PIVOT_CANDLES` (default `2`)
 - `STOP_RECENT_BUFFER_PCT` (default `0.00`)
 - `FRACTAL_FILTER_ENABLED` (default `true`)
+- `FRACTAL_GATE_CADENCE_SECONDS` (default `3600`)
 - `FRACTAL_LOOKBACK` (default `30`)
 - `FRACTAL_MIN_FIDELITY` (default `70.0`)
 - `FRACTAL_MIN_CONFIDENCE` (default `65.0`)
