@@ -189,6 +189,12 @@ Discord commands + reports:
 - `DISCORD_DAILY_REPORT_ENABLED` (default `false`)
 - `DISCORD_DAILY_REPORT_HOUR_LOCAL` (default `20`)
 
+Stop loss tuning:
+- `STOP_RECENT_LOOKBACK_CANDLES` (default `1`)
+- `STOP_RECENT_BUFFER_PCT` (default `0.00`)
+- `MIN_STOP_DISTANCE_PCT` (default `0.15`)
+- `MIN_STOP_DISTANCE_USD` (default `1.50`)
+
 ## Notes
 
 - If you pasted real API keys into chat or into git history, rotate/revoke them immediately.

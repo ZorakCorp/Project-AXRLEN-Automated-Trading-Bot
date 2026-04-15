@@ -651,6 +651,20 @@ class TradeManager:
 
         stop_loss = round(float(stop_loss), 2)
         stop_distance = abs(last_price - float(stop_loss))
+
+        # Enforce a minimum stop distance so SL isn't effectively at the entry.
+        # This prevents constant stop-outs on normal volatility/noise.
+        min_stop_distance_pct = float(os.getenv("MIN_STOP_DISTANCE_PCT", "0.15"))  # percent of price
+        min_stop_distance_usd = float(os.getenv("MIN_STOP_DISTANCE_USD", "1.50"))  # absolute USD
+        min_stop_distance_pct = max(0.0, min(5.0, min_stop_distance_pct))
+        min_required = max(last_price * (min_stop_distance_pct / 100.0), min_stop_distance_usd)
+        if stop_distance < min_required:
+            if classification == "LONG":
+                stop_loss = round(float(last_price - min_required), 2)
+            else:
+                stop_loss = round(float(last_price + min_required), 2)
+            stop_distance = abs(last_price - float(stop_loss))
+
         position_size = self.risk_engine.position_size(score, stop_distance, last_price)
         position_size = min(position_size, CAPITAL_USD * MAX_NOTIONAL_PCT)
         if position_size <= 0:
