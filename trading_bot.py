@@ -34,7 +34,6 @@ from config import (
 from raw_data_engine import RawDataIngestion
 from signal_engine import RiskEngine, run_probability
 from state_store import append_jsonl, load_json, save_json
-from fractal_filter import compute_fractal_filter
 
 logger = logging.getLogger(__name__)
 
@@ -619,7 +618,6 @@ class TradeManager:
         self.last_order_submit_at_ts = 0  # unix seconds (prevents duplicate submits)
         self.pending_entry = None  # {created_at_ts, side, size_usd, limit_price, resting_oid, stop_loss, take_profit, size_coin?}
         self.protection_placed_for_entry_id = ""  # idempotency marker for protections after limit fill
-        self.last_fractal_gate_check_at_ts = 0  # unix seconds (throttle fractal gating cadence)
 
         self.state_path = os.getenv("BOT_STATE_PATH", "bot_state.json")
         self.journal_path = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
@@ -689,10 +687,6 @@ class TradeManager:
         self.pending_entry = state.get("pending_entry")
         self.protection_placed_for_entry_id = str(state.get("protection_placed_for_entry_id", "") or "")
         try:
-            self.last_fractal_gate_check_at_ts = int(state.get("last_fractal_gate_check_at_ts", 0) or 0)
-        except Exception:
-            self.last_fractal_gate_check_at_ts = 0
-        try:
             self.last_trade_closed_at_ts = int(state.get("last_trade_closed_at_ts", 0) or 0)
         except Exception:
             self.last_trade_closed_at_ts = 0
@@ -720,7 +714,6 @@ class TradeManager:
             "last_order_submit_at_ts": int(self.last_order_submit_at_ts),
             "pending_entry": self.pending_entry,
             "protection_placed_for_entry_id": self.protection_placed_for_entry_id,
-            "last_fractal_gate_check_at_ts": int(self.last_fractal_gate_check_at_ts),
         }
         try:
             save_json(self.state_path, state)
@@ -768,41 +761,6 @@ class TradeManager:
         if pd.isna(atr) or atr <= 0:
             return float(df["close"].iloc[-1]) * (sl_percent / 100)
         return float(atr) * 2
-
-    def _nearest_swing_extreme(self, df: pd.DataFrame, *, side: str, lookback: int, pivot: int) -> Optional[float]:
-        """
-        Find the most recent local swing low/high within the lookback window.
-        - For LONG (side=buy): returns a swing LOW.
-        - For SHORT (side=sell): returns a swing HIGH.
-        """
-        if df is None or len(df) == 0:
-            return None
-        need_cols = {"low", "high"}
-        if not need_cols.issubset(set(df.columns)):
-            return None
-        w = df.tail(max(1, int(lookback))).reset_index(drop=True)
-        if len(w) < (pivot * 2 + 1):
-            return None
-
-        if side == "buy":
-            lows = w["low"].astype(float).tolist()
-            # scan from most recent backwards
-            for i in range(len(lows) - pivot - 1, pivot - 1, -1):
-                center = lows[i]
-                left = lows[i - pivot : i]
-                right = lows[i + 1 : i + 1 + pivot]
-                if center < min(left) and center <= min(right):
-                    return float(center)
-            return float(min(lows)) if lows else None
-
-        highs = w["high"].astype(float).tolist()
-        for i in range(len(highs) - pivot - 1, pivot - 1, -1):
-            center = highs[i]
-            left = highs[i - pivot : i]
-            right = highs[i + 1 : i + 1 + pivot]
-            if center > max(left) and center >= max(right):
-                return float(center)
-        return float(max(highs)) if highs else None
 
     def should_halt_trading(self) -> bool:
         if self.daily_loss <= -0.05 * CAPITAL_USD:
@@ -867,59 +825,6 @@ class TradeManager:
             logger.info("Market state is FLAT, observation only")
             return
 
-        # Optional: Fractal filter gate (TradingView "Nested Fractal" alignment/confidence port).
-        fractal_enabled = os.getenv("FRACTAL_FILTER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
-        if fractal_enabled:
-            # Only run the fractal gate on an hourly cadence (default: 1 hour).
-            now_ts = int(time.time())
-            fractal_cadence_seconds = int(os.getenv("FRACTAL_GATE_CADENCE_SECONDS", "3600"))
-            if self.last_fractal_gate_check_at_ts and fractal_cadence_seconds > 0:
-                remaining = (self.last_fractal_gate_check_at_ts + fractal_cadence_seconds) - now_ts
-                if remaining > 0:
-                    logger.info("Fractal gate cadence active (%ss remaining), skipping new entry", remaining)
-                    return
-            try:
-                fractal_lb = int(os.getenv("FRACTAL_LOOKBACK", "30"))
-                fractal_min_fidelity = float(os.getenv("FRACTAL_MIN_FIDELITY", "70.0"))
-                fractal_min_conf = float(os.getenv("FRACTAL_MIN_CONFIDENCE", "65.0"))
-                f = compute_fractal_filter(
-                    df,
-                    fractal_lookback=fractal_lb,
-                    min_fidelity=fractal_min_fidelity,
-                    min_confidence=fractal_min_conf,
-                )
-                context["fractal_filter"] = {
-                    "fidelity": f.fidelity,
-                    "confidence": f.confidence,
-                    "aligned": f.aligned,
-                    "trend_micro": f.trend_micro,
-                    "trend_meso": f.trend_meso,
-                    "trend_macro": f.trend_macro,
-                    "allow_long": f.allow_long,
-                    "allow_short": f.allow_short,
-                }
-                # Record that we ran the gate this cycle (regardless of allow/deny).
-                self.last_fractal_gate_check_at_ts = now_ts
-                self._save_state()
-                if classification == "LONG" and not f.allow_long:
-                    logger.info(
-                        "Fractal filter blocked LONG (confidence=%.1f fidelity=%.1f aligned=%s)",
-                        f.confidence,
-                        f.fidelity,
-                        str(f.aligned).lower(),
-                    )
-                    return
-                if classification == "SHORT" and not f.allow_short:
-                    logger.info(
-                        "Fractal filter blocked SHORT (confidence=%.1f fidelity=%.1f aligned=%s)",
-                        f.confidence,
-                        f.fidelity,
-                        str(f.aligned).lower(),
-                    )
-                    return
-            except Exception as e:
-                logger.warning("Fractal filter failed (%s); continuing without filter for this iteration.", str(e))
-
         red_day = context.get("red_day", False)
         if red_day:
             logger.info("Red Day Gate active, skipping new positions")
@@ -960,32 +865,55 @@ class TradeManager:
             logger.info("Calculated position size is zero, skipping trade")
             return
 
-        # Stop loss: default to nearest recent swing low/high (per user requirement).
-        stop_mode = os.getenv("STOP_MODE", "nearest_swing").strip().lower()
-        stop_lookback = int(os.getenv("STOP_RECENT_LOOKBACK_CANDLES", "50"))
-        stop_pivot = int(os.getenv("STOP_PIVOT_CANDLES", "2"))
-        stop_buffer_pct = float(os.getenv("STOP_RECENT_BUFFER_PCT", "0.00"))
+        # Stop loss: place at the nearest recent swing low/high (pivot) by default,
+        # falling back to ATR/% distance if no pivot is found.
+        use_nearest_pivot_stop = os.getenv("STOP_USE_NEAREST_PIVOT", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+        pivot_lookback = int(os.getenv("STOP_PIVOT_LOOKBACK_CANDLES", "50"))
+        pivot_buffer_pct = float(os.getenv("STOP_PIVOT_BUFFER_PCT", "0.00"))
 
-        side = "buy" if classification == "LONG" else "sell"
-        if stop_mode == "nearest_swing":
-            extreme = self._nearest_swing_extreme(df, side=side, lookback=stop_lookback, pivot=stop_pivot)
-            if extreme is None:
-                stop_loss = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
-            else:
+        stop_loss_val = None
+        if use_nearest_pivot_stop and {"low", "high"}.issubset(set(df.columns)) and len(df) >= 3:
+            lb = max(3, min(len(df), pivot_lookback))
+            window = df.tail(lb).reset_index(drop=True)
+            try:
                 if classification == "LONG":
-                    stop_loss = float(extreme) * (1 - stop_buffer_pct / 100.0)
+                    # Find the most recent pivot low below current price.
+                    lows = [float(x) for x in window["low"].tolist()]
+                    for i in range(len(lows) - 2, 0, -1):
+                        if lows[i] < lows[i - 1] and lows[i] < lows[i + 1] and lows[i] < last_price:
+                            stop_loss_val = lows[i] * (1 - pivot_buffer_pct / 100.0)
+                            break
+                    # Fallback: nearest (most recent) low below price.
+                    if stop_loss_val is None:
+                        for i in range(len(lows) - 1, -1, -1):
+                            if lows[i] < last_price:
+                                stop_loss_val = lows[i] * (1 - pivot_buffer_pct / 100.0)
+                                break
                 else:
-                    stop_loss = float(extreme) * (1 + stop_buffer_pct / 100.0)
-        else:
-            stop_loss = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
+                    highs = [float(x) for x in window["high"].tolist()]
+                    for i in range(len(highs) - 2, 0, -1):
+                        if highs[i] > highs[i - 1] and highs[i] > highs[i + 1] and highs[i] > last_price:
+                            stop_loss_val = highs[i] * (1 + pivot_buffer_pct / 100.0)
+                            break
+                    if stop_loss_val is None:
+                        for i in range(len(highs) - 1, -1, -1):
+                            if highs[i] > last_price:
+                                stop_loss_val = highs[i] * (1 + pivot_buffer_pct / 100.0)
+                                break
+            except Exception:
+                stop_loss_val = None
 
-        stop_loss = round(float(stop_loss), 2)
+        if stop_loss_val is None:
+            stop_loss_val = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
+
+        stop_loss = round(float(stop_loss_val), 2)
         take_profit = round(
             last_price + last_price * (tp_percent / 100)
             if classification == "LONG"
             else last_price - last_price * (tp_percent / 100),
             2,
         )
+        side = "buy" if classification == "LONG" else "sell"
         idempotency_key = str(uuid.uuid4())
         requested_leverage = int(os.getenv("ORDER_LEVERAGE", "25"))
         leverage = min(max(1, requested_leverage), MAX_LEVERAGE)
@@ -1088,10 +1016,7 @@ class TradeManager:
             if realized_pnl is not None:
                 self.record_trade_result(float(realized_pnl))
             logger.info("Position closed by exchange: %s", latest.get("status"))
-            # Always start the post-trade cooldown window on closure (even if realized_pnl is missing).
-            self.last_trade_closed_at_ts = int(time.time())
             self.active_position = None
-            self._save_state()
 
     def monitor_pending_entry(self) -> None:
         pending = self.pending_entry or {}
