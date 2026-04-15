@@ -5,6 +5,7 @@ import uuid
 import signal
 from datetime import datetime, timezone
 from typing import Dict, Optional
+from decimal import Decimal, ROUND_FLOOR, ROUND_CEILING
 
 import os
 import pandas as pd
@@ -200,14 +201,38 @@ class HyperliquidClient:
         except Exception:
             sz_decimals_map = {}
 
+        def _px_decimals() -> int:
+            sz_decimals_for_coin = int(sz_decimals_map.get(coin, 0))
+            return max(0, max_decimals - sz_decimals_for_coin)
+
+        def _tick_size() -> Decimal:
+            d = _px_decimals()
+            # 10^-d, e.g. d=2 -> 0.01
+            return Decimal(1).scaleb(-d)
+
         def _round_px(value: float) -> float:
             px_val = float(value)
             if px_val > 100_000:
                 return float(round(px_val))
-            sz_decimals_for_coin = int(sz_decimals_map.get(coin, 0))
-            decimals = max(0, max_decimals - sz_decimals_for_coin)
+            decimals = _px_decimals()
             # First limit to 5 significant figures, then enforce decimal places
             return round(float(f"{px_val:.5g}"), decimals)
+
+        def _quantize_to_tick(value: float, *, rounding: str) -> float:
+            """
+            Ensure the price is divisible by tick size while keeping it on the safe side.
+            rounding: "floor" or "ceil"
+            """
+            v = Decimal(str(float(value)))
+            tick = _tick_size()
+            if tick == 0:
+                return float(value)
+            scaled = v / tick
+            if rounding == "floor":
+                q = scaled.to_integral_value(rounding=ROUND_FLOOR) * tick
+            else:
+                q = scaled.to_integral_value(rounding=ROUND_CEILING) * tick
+            return float(q)
 
         sz = float(size_usd) / max(mid, 1e-9)
         sz_decimals = int(self.info.asset_to_sz_decimals[asset])
@@ -221,6 +246,8 @@ class HyperliquidClient:
         slippage = float(os.getenv("ORDER_SLIPPAGE", "0.01"))
         px = mid * (1 + slippage) if is_buy else mid * (1 - slippage)
         px = _round_px(px)
+        # Entry price should be a valid tick.
+        px = _quantize_to_tick(px, rounding=("ceil" if is_buy else "floor"))
 
         orders = [
             {
@@ -240,8 +267,34 @@ class HyperliquidClient:
             )
 
         if have_protection:
-            sl_px = _round_px(float(stop_loss))
-            tp_px = _round_px(float(take_profit))
+            sl_px_raw = float(stop_loss)
+            tp_px_raw = float(take_profit)
+
+            # Round to allowed precision first.
+            sl_px = _round_px(sl_px_raw)
+            tp_px = _round_px(tp_px_raw)
+
+            # Then quantize to tick size with directional rounding so SL/TP don't cross the entry.
+            # For a LONG (buy):
+            # - SL must be BELOW entry => floor it, and enforce at least 1 tick below.
+            # - TP must be ABOVE entry => ceil it, and enforce at least 1 tick above.
+            # For a SHORT (sell): inverted.
+            tick = float(_tick_size())
+            if is_buy:
+                sl_px = _quantize_to_tick(sl_px, rounding="floor")
+                tp_px = _quantize_to_tick(tp_px, rounding="ceil")
+                if sl_px >= px:
+                    sl_px = _quantize_to_tick(px - tick, rounding="floor")
+                if tp_px <= px:
+                    tp_px = _quantize_to_tick(px + tick, rounding="ceil")
+            else:
+                sl_px = _quantize_to_tick(sl_px, rounding="ceil")
+                tp_px = _quantize_to_tick(tp_px, rounding="floor")
+                if sl_px <= px:
+                    sl_px = _quantize_to_tick(px + tick, rounding="ceil")
+                if tp_px >= px:
+                    tp_px = _quantize_to_tick(px - tick, rounding="floor")
+
             orders.append(
                 {
                     "coin": coin,
@@ -266,6 +319,17 @@ class HyperliquidClient:
         else:
             result = self.exchange.bulk_orders(orders, grouping="na")
 
+        # If any leg was rejected, do NOT treat this as a placed position.
+        if isinstance(result, dict) and result.get("status") == "ok":
+            statuses = (((result.get("response") or {}).get("data") or {}).get("statuses")) if isinstance(result.get("response"), dict) else None
+            if isinstance(statuses, list):
+                errors = []
+                for st in statuses:
+                    if isinstance(st, dict) and st.get("error"):
+                        errors.append(str(st.get("error")))
+                if errors:
+                    raise RuntimeError(f"Hyperliquid order rejected: {'; '.join(errors)[:500]}")
+
         return {
             "order_id": f"hl_{idempotency_key or str(uuid.uuid4())[:8]}",
             "status": "placed",
@@ -274,8 +338,8 @@ class HyperliquidClient:
             "leverage": leverage,
             "size_usd": float(size_usd),
             "size_coin": float(sz),
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
+            "stop_loss": float(sl_px) if have_protection else stop_loss,
+            "take_profit": float(tp_px) if have_protection else take_profit,
             "response": result,
         }
 
