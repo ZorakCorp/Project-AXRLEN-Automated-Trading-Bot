@@ -619,7 +619,6 @@ class TradeManager:
         self.last_order_submit_at_ts = 0  # unix seconds (prevents duplicate submits)
         self.pending_entry = None  # {created_at_ts, side, size_usd, limit_price, resting_oid, stop_loss, take_profit, size_coin?}
         self.protection_placed_for_entry_id = ""  # idempotency marker for protections after limit fill
-        self.last_fractal_gate_check_at_ts = 0  # unix seconds (throttle fractal gating cadence)
 
         self.state_path = os.getenv("BOT_STATE_PATH", "bot_state.json")
         self.journal_path = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
@@ -689,10 +688,6 @@ class TradeManager:
         self.pending_entry = state.get("pending_entry")
         self.protection_placed_for_entry_id = str(state.get("protection_placed_for_entry_id", "") or "")
         try:
-            self.last_fractal_gate_check_at_ts = int(state.get("last_fractal_gate_check_at_ts", 0) or 0)
-        except Exception:
-            self.last_fractal_gate_check_at_ts = 0
-        try:
             self.last_trade_closed_at_ts = int(state.get("last_trade_closed_at_ts", 0) or 0)
         except Exception:
             self.last_trade_closed_at_ts = 0
@@ -720,7 +715,6 @@ class TradeManager:
             "last_order_submit_at_ts": int(self.last_order_submit_at_ts),
             "pending_entry": self.pending_entry,
             "protection_placed_for_entry_id": self.protection_placed_for_entry_id,
-            "last_fractal_gate_check_at_ts": int(self.last_fractal_gate_check_at_ts),
         }
         try:
             save_json(self.state_path, state)
@@ -870,14 +864,6 @@ class TradeManager:
         # Optional: Fractal filter gate (TradingView "Nested Fractal" alignment/confidence port).
         fractal_enabled = os.getenv("FRACTAL_FILTER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
         if fractal_enabled:
-            # Only run the fractal gate on an hourly cadence (default: 1 hour).
-            now_ts = int(time.time())
-            fractal_cadence_seconds = int(os.getenv("FRACTAL_GATE_CADENCE_SECONDS", "3600"))
-            if self.last_fractal_gate_check_at_ts and fractal_cadence_seconds > 0:
-                remaining = (self.last_fractal_gate_check_at_ts + fractal_cadence_seconds) - now_ts
-                if remaining > 0:
-                    logger.info("Fractal gate cadence active (%ss remaining), skipping new entry", remaining)
-                    return
             try:
                 fractal_lb = int(os.getenv("FRACTAL_LOOKBACK", "30"))
                 fractal_min_fidelity = float(os.getenv("FRACTAL_MIN_FIDELITY", "70.0"))
@@ -898,9 +884,6 @@ class TradeManager:
                     "allow_long": f.allow_long,
                     "allow_short": f.allow_short,
                 }
-                # Record that we ran the gate this cycle (regardless of allow/deny).
-                self.last_fractal_gate_check_at_ts = now_ts
-                self._save_state()
                 if classification == "LONG" and not f.allow_long:
                     logger.info(
                         "Fractal filter blocked LONG (confidence=%.1f fidelity=%.1f aligned=%s)",
