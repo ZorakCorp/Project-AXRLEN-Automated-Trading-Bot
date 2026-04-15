@@ -78,8 +78,8 @@ class OpenAIClient:
         payload = {
             "model": model_name,
             "input": [
-                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-                {"role": "user", "content": [{"type": "text", "text": user_message}]},
+                {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                {"role": "user", "content": [{"type": "input_text", "text": user_message}]},
             ],
         }
         headers = {
