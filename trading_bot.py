@@ -34,6 +34,7 @@ from config import (
 from raw_data_engine import RawDataIngestion
 from signal_engine import RiskEngine, run_probability
 from state_store import append_jsonl, load_json, save_json
+from discord_notifier import DiscordNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +396,7 @@ class TradeManager:
         self._shutdown_requested = False
         self.last_trade_closed_at_ts = 0  # unix seconds
         self.last_order_submit_at_ts = 0  # unix seconds (prevents duplicate submits)
+        self.notifier = DiscordNotifier()
 
         self.state_path = os.getenv("BOT_STATE_PATH", "bot_state.json")
         self.journal_path = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
@@ -658,6 +660,10 @@ class TradeManager:
             take_profit,
             idempotency_key,
         )
+        self.notifier.send(
+            f"[AXRLEN] Signal {classification} score={score:.2f} {MARKET_SYMBOL} "
+            f"size_usd={position_size:.2f} stop={stop_loss} tp={take_profit} live={LIVE_TRADING}"
+        )
         self.last_order_submit_at_ts = int(time.time())
         self._save_state()
         append_jsonl(
@@ -687,6 +693,7 @@ class TradeManager:
         self.active_position = result
         self._save_state()
         logger.info("Opened position: %s", result)
+        self.notifier.send(f"[AXRLEN] Opened {MARKET_SYMBOL} {classification} order_id={result.get('order_id')}")
 
     def monitor_position(self):
         positions = self.client.get_positions()
@@ -695,6 +702,7 @@ class TradeManager:
             # If we thought we had a position, treat this as a closure event and start cooldown.
             if self.active_position:
                 self.last_trade_closed_at_ts = int(time.time())
+                self.notifier.send(f"[AXRLEN] Position closed (no open positions found) {MARKET_SYMBOL}")
             self.active_position = None
             self._save_state()
             return
@@ -711,6 +719,7 @@ class TradeManager:
             if realized_pnl is not None:
                 self.record_trade_result(float(realized_pnl))
             logger.info("Position closed by exchange: %s", latest.get("status"))
+            self.notifier.send(f"[AXRLEN] Position closed by exchange status={latest.get('status')} {MARKET_SYMBOL}")
             self.active_position = None
 
     def run(self, interval_seconds: int = 60):
@@ -726,6 +735,7 @@ class TradeManager:
                     self.execute_signal(probability, df, context)
             except Exception as exc:
                 logger.exception("Error during trade loop: %s", exc)
+                self.notifier.send(f"[AXRLEN] ERROR in trade loop: {str(exc)[:300]}")
                 append_jsonl(
                     self.journal_path,
                     {

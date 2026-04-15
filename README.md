@@ -118,6 +118,15 @@ State/logging (optional):
 - `BOT_STATE_PATH=bot_state.json`
 - `BOT_JOURNAL_PATH=bot_journal.jsonl`
 
+Discord alerts (optional):
+- `DISCORD_ALERTS_ENABLED=true`
+- **Webhook mode** (posts to a channel):
+  - `DISCORD_WEBHOOK_URL=<your webhook url>`
+- **1:1 DM mode** (personal alerts):
+  - `DISCORD_BOT_TOKEN=<bot token>`
+  - `DISCORD_USER_ID=<your discord user id>`
+- `DISCORD_MIN_ALERT_INTERVAL_SECONDS=30`
+
 ### Step 5: First run in dry-run
 
 Leave:
@@ -161,6 +170,13 @@ State/logging:
 
 - `BOT_STATE_PATH` (default `bot_state.json`)
 - `BOT_JOURNAL_PATH` (default `bot_journal.jsonl`)
+
+Discord alerts:
+- `DISCORD_ALERTS_ENABLED` (default `false`)
+- `DISCORD_WEBHOOK_URL` (optional)
+- `DISCORD_BOT_TOKEN` (optional)
+- `DISCORD_USER_ID` (optional)
+- `DISCORD_MIN_ALERT_INTERVAL_SECONDS` (default `30`)
 
 ## Notes
 
