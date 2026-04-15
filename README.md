@@ -131,6 +131,10 @@ Discord commands + daily report (optional):
 - `DISCORD_COMMANDS_ENABLED=true` (enables DM commands)
 - `DISCORD_DAILY_REPORT_ENABLED=true` (sends daily PnL summary)
 - `DISCORD_DAILY_REPORT_HOUR_LOCAL=20` (8PM America/New_York)
+- DM commands:
+  - `/pnl day|3d|week|month|year|ytd|all`
+  - `/winrate day|3d|week|month|year|ytd|all`
+  - `/help`
 
 ### Step 5: First run in dry-run
 
@@ -190,7 +194,7 @@ Discord commands + reports:
 - `DISCORD_DAILY_REPORT_HOUR_LOCAL` (default `20`)
 
 Stop loss tuning:
-- `STOP_RECENT_LOOKBACK_CANDLES` (default `1`)
+- `STOP_RECENT_LOOKBACK_CANDLES` (default `1`, recommended `18` for your setup)
 - `STOP_RECENT_BUFFER_PCT` (default `0.00`)
 - `MIN_STOP_DISTANCE_PCT` (default `0.15`)
 - `MIN_STOP_DISTANCE_USD` (default `1.50`)
