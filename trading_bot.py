@@ -329,6 +329,8 @@ class TradeManager:
         self.trade_log = []
         self.ai_model = None
         self._shutdown_requested = False
+        self.last_trade_closed_at_ts = 0  # unix seconds
+        self.last_order_submit_at_ts = 0  # unix seconds (prevents duplicate submits)
 
         self.state_path = os.getenv("BOT_STATE_PATH", "bot_state.json")
         self.journal_path = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
@@ -395,6 +397,14 @@ class TradeManager:
         self.weekly_loss = float(state.get("weekly_loss", 0.0) or 0.0)
         self.trade_log = list(state.get("trade_log", []) or [])
         self.active_position = state.get("active_position")
+        try:
+            self.last_trade_closed_at_ts = int(state.get("last_trade_closed_at_ts", 0) or 0)
+        except Exception:
+            self.last_trade_closed_at_ts = 0
+        try:
+            self.last_order_submit_at_ts = int(state.get("last_order_submit_at_ts", 0) or 0)
+        except Exception:
+            self.last_order_submit_at_ts = 0
         capital_override = state.get("capital_usd")
         if capital_override is not None:
             try:
@@ -411,6 +421,8 @@ class TradeManager:
             "weekly_loss": self.weekly_loss,
             "trade_log": self.trade_log[-1000:],
             "active_position": self.active_position,
+            "last_trade_closed_at_ts": int(self.last_trade_closed_at_ts),
+            "last_order_submit_at_ts": int(self.last_order_submit_at_ts),
         }
         try:
             save_json(self.state_path, state)
@@ -473,6 +485,8 @@ class TradeManager:
         self.daily_loss += pnl if pnl < 0 else 0
         self.weekly_loss += pnl if pnl < 0 else 0
         self.risk_engine.update_capital(pnl)
+        # Start the post-trade cooldown window.
+        self.last_trade_closed_at_ts = int(time.time())
         append_jsonl(
             self.journal_path,
             {
@@ -495,6 +509,17 @@ class TradeManager:
             logger.info("Halting new trades due to drawdown limit")
             return
 
+        # If the container restarted or local state is stale, reconcile against live exchange state
+        # to avoid placing duplicate entry+TP/SL bundles.
+        if not self.active_position:
+            try:
+                positions = self.client.get_positions()
+                if positions.get("positions"):
+                    self.active_position = positions["positions"][0]
+                    self._save_state()
+            except Exception:
+                pass
+
         if self.active_position:
             logger.info("Active position already open, checking for close conditions")
             self.monitor_position()
@@ -508,6 +533,24 @@ class TradeManager:
         if red_day:
             logger.info("Red Day Gate active, skipping new positions")
             return
+
+        # Cooldown after a completed trade (defaults to 1 hour).
+        post_trade_cooldown_seconds = int(os.getenv("POST_TRADE_COOLDOWN_SECONDS", "3600"))
+        now_ts = int(time.time())
+        if self.last_trade_closed_at_ts and post_trade_cooldown_seconds > 0:
+            remaining = (self.last_trade_closed_at_ts + post_trade_cooldown_seconds) - now_ts
+            if remaining > 0:
+                logger.info("Post-trade cooldown active (%ss remaining), skipping new entry", remaining)
+                return
+
+        # Short anti-duplicate guard: if we recently attempted to submit an order bundle,
+        # don't immediately submit again (Hyperliquid positions can take a moment to reflect).
+        submit_cooldown_seconds = int(os.getenv("ORDER_SUBMIT_COOLDOWN_SECONDS", "120"))
+        if self.last_order_submit_at_ts and submit_cooldown_seconds > 0:
+            remaining = (self.last_order_submit_at_ts + submit_cooldown_seconds) - now_ts
+            if remaining > 0:
+                logger.info("Order submit cooldown active (%ss remaining), skipping duplicate submit", remaining)
+                return
 
         last_price = float(df["close"].iloc[-1])
         # Get dynamic TP/SL from AI recommendation
@@ -551,6 +594,8 @@ class TradeManager:
             take_profit,
             idempotency_key,
         )
+        self.last_order_submit_at_ts = int(time.time())
+        self._save_state()
         append_jsonl(
             self.journal_path,
             {
@@ -583,6 +628,9 @@ class TradeManager:
         positions = self.client.get_positions()
         if not positions.get("positions"):
             logger.info("No open positions found")
+            # If we thought we had a position, treat this as a closure event and start cooldown.
+            if self.active_position:
+                self.last_trade_closed_at_ts = int(time.time())
             self.active_position = None
             self._save_state()
             return
