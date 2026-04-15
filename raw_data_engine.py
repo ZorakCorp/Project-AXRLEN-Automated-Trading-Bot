@@ -2,7 +2,7 @@ import logging
 from typing import Any, Dict
 
 from ephemeris_engine import EphemerisEngine
-from gemini_client import GeminiClient
+from openai_client import OpenAIClient
 from leader_engine import LeaderDashaEngine
 
 logger = logging.getLogger(__name__)
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class RawDataIngestion:
     def __init__(self):
-        self.gemini = GeminiClient()
+        self.ai = OpenAIClient()
         self.leader_engine = LeaderDashaEngine()
         self.ephemeris = EphemerisEngine()
 
@@ -31,7 +31,7 @@ class RawDataIngestion:
         # Example: requests.get("https://newsapi.org/v2/everything?q=OPEC+oil&apiKey=YOUR_KEY")
         raw_article = {"headline": "", "body": ""}
         sentiment = (
-            self.gemini.classify_news_sentiment(raw_article["body"])
+            self.ai.classify_news_sentiment(raw_article["body"])
             if raw_article["body"]
             else {
                 "direction": "neutral",
@@ -54,11 +54,14 @@ class RawDataIngestion:
         return {"dark_pool": {"institutional_flow": []}}
 
     def interpret_leader_dasha(self, leader_context: Dict[str, Any]) -> Dict[str, Any]:
-        logger.debug("Interpreting leader Dasha context through Gemini")
+        logger.debug("Interpreting leader Dasha context through OpenAI")
         try:
-            return self.gemini.interpret_leader_dasha(leader_context)
+            return self.ai.interpret_leader_dasha(leader_context)
         except RuntimeError as e:
-            logger.warning("Gemini API failed for leader interpretation after all retries (%s). Falling back to dummy data.", str(e))
+            logger.warning(
+                "OpenAI API failed for leader interpretation after all retries (%s). Falling back to dummy data.",
+                str(e),
+            )
             return {
                 "likely_action": "maintain_cuts",
                 "probability": 75,
@@ -67,11 +70,14 @@ class RawDataIngestion:
             }
 
     def generate_macro_bias(self, macro_context: Dict[str, Any]) -> Dict[str, Any]:
-        logger.debug("Generating daily macro bias statement through Gemini")
+        logger.debug("Generating daily macro bias statement through OpenAI")
         try:
-            return self.gemini.macro_bias_statement(macro_context)
+            return self.ai.macro_bias_statement(macro_context)
         except RuntimeError as e:
-            logger.warning("Gemini API failed for macro bias after all retries (%s). Falling back to dummy data.", str(e))
+            logger.warning(
+                "OpenAI API failed for macro bias after all retries (%s). Falling back to dummy data.",
+                str(e),
+            )
             return {
                 "statement": "Astrological signals indicate bullish conditions (dummy data)",
                 "direction": "bullish",
@@ -79,11 +85,14 @@ class RawDataIngestion:
             }
 
     def run_calibration_analysis(self, report: Dict[str, Any]) -> Dict[str, Any]:
-        logger.debug("Running monthly calibration analysis through Gemini")
+        logger.debug("Running monthly calibration analysis through OpenAI")
         try:
-            return self.gemini.calibration_diagnostic(report)
+            return self.ai.calibration_diagnostic(report)
         except RuntimeError as e:
-            logger.warning("Gemini API failed for calibration analysis after all retries (%s). Falling back to dummy data.", str(e))
+            logger.warning(
+                "OpenAI API failed for calibration analysis after all retries (%s). Falling back to dummy data.",
+                str(e),
+            )
             return {
                 "diagnostic_summary": "Calibration analysis unavailable (dummy data)",
                 "weight_adjustments": [],
@@ -91,8 +100,8 @@ class RawDataIngestion:
             }
 
     def flash_scout(self, query: str, dataset_context: Dict[str, Any]) -> Dict[str, Any]:
-        logger.debug("Running Gemini Flash scout for historical precedents")
-        return self.gemini.flash_scout(query, dataset_context)
+        logger.debug("Running OpenAI scout for historical precedents")
+        return self.ai.flash_scout(query, dataset_context)
 
     def build_context(self, symbol: str) -> Dict[str, Any]:
         leader_contexts = self.leader_engine.get_leader_contexts()
@@ -118,13 +127,16 @@ class RawDataIngestion:
         }
         # Add dynamic TP/SL after context is built
         try:
-            tp_sl = self.gemini.get_tp_sl_levels(context)
+            tp_sl = self.ai.get_tp_sl_levels(context)
             context["tp_sl_recommendation"] = tp_sl
-        except Exception as e:
-            logger.warning("Gemini API failed for TP/SL levels after all retries (%s). Falling back to default levels.", str(e))
+        except RuntimeError as e:
+            logger.warning(
+                "OpenAI API failed for TP/SL levels after all retries (%s). Falling back to default levels.",
+                str(e),
+            )
             context["tp_sl_recommendation"] = {
                 "take_profit_percentage": 0.5,
                 "stop_loss_percentage": 0.3,
-                "rationale": "Default levels (Gemini API unavailable)",
+                "rationale": "Default levels (OpenAI API unavailable)",
             }
         return context

@@ -1,13 +1,13 @@
 # AXRLEN-TRADING
 
-Automated trading bot framework (Hyperliquid + Gemini) with safety-first defaults.
+Automated trading bot framework (Hyperliquid + OpenAI) with safety-first defaults.
 
 ## What this repo is
 
 - **Signal engine** that outputs `LONG` / `SHORT` / `FLAT`
 - **Risk sizing** with notional caps
 - **Execution adapter** for Hyperliquid (uses the official `hyperliquid-python-sdk`)
-- **Gemini integration** for structured signal/context enrichment (JSON-only outputs)
+- **OpenAI integration** for structured signal/context enrichment (JSON-only outputs)
 
 ## Safety model (read this)
 
@@ -36,14 +36,13 @@ python main.py run
 
 Railway is the simplest way to run this bot 24/7 without installing Python locally. This repo includes a `Dockerfile` and `railway.toml`.
 
-### Step 1: Create a Gemini API key
+### Step 1: Create an OpenAI API key
 
-1) Go to Google AI Studio: [Google AI Studio](https://makersuite.google.com/app/apikey)
-2) Click **Create API key**.
-3) Copy the key value.
+1) Go to the OpenAI dashboard and create an API key.
+2) Copy the key value.
 
 Notes:
-- Gemini pricing/credits change over time. Some accounts have free tier and/or promotional credits, but **do not assume a guaranteed $300 credit**—check Google’s current pricing/credits page in your account.
+- Pricing/credits change over time; check your OpenAI billing dashboard for current rates.
 - Treat the key like a password. Don’t commit it to git, don’t paste it into chats.
 
 ### Step 2: Create Hyperliquid API credentials
@@ -71,10 +70,10 @@ Core:
 - `MARKET_SYMBOL=ETH`
 - `CAPITAL_USD=100000`
 
-Gemini:
-- `GEMINI_API_KEY=<your key>`
-- `GEMINI_API_BASE=https://generativelanguage.googleapis.com/v1beta`
-- `GEMINI_API_MODEL=gemini-2.5-flash`
+OpenAI:
+- `OPENAI_API_KEY=<your key>`
+- `OPENAI_API_BASE=https://api.openai.com/v1`
+- `OPENAI_API_MODEL=gpt-4.1-mini`
 
 Hyperliquid:
 - `HYPERLIQUID_WALLET_ADDRESS=<0x...>`
@@ -116,7 +115,7 @@ If you want to force the bot to trade *without* protective TP/SL (not recommende
 
 ## Troubleshooting
 
-- **Docker builds but Gemini fails**: confirm `GEMINI_API_KEY` is valid and enabled in your Google project.
+- **Docker builds but OpenAI fails**: confirm `OPENAI_API_KEY` is valid and your project has billing enabled.
 - **Hyperliquid refuses live trading**: confirm `HYPERLIQUID_EXECUTION_VERIFIED=true` and your wallet/secret are correct.
 - **Nothing happens**: the bot may classify `FLAT` and skip trades; check logs for `classification`.
 

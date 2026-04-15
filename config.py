@@ -15,11 +15,10 @@ def _normalize_base_url(url: str) -> str:
 HYPERLIQUID_API_KEY = os.getenv("HYPERLIQUID_API_KEY", "")
 HYPERLIQUID_API_SECRET = os.getenv("HYPERLIQUID_API_SECRET", "")
 HYPERLIQUID_WALLET_ADDRESS = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_API_BASE = os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta")
-# Google has retired/renamed models over time. Default to a newer Flash model.
-# Users can override via GEMINI_API_MODEL in Railway variables.
-GEMINI_API_MODEL = os.getenv("GEMINI_API_MODEL", "gemini-2.5-flash")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1").strip().rstrip("/")
+# Cheapest GPT-4-class default; override via OPENAI_API_MODEL in Railway variables.
+OPENAI_API_MODEL = os.getenv("OPENAI_API_MODEL", "gpt-4.1-mini")
 MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "ETH")
 CAPITAL_USD = float(os.getenv("CAPITAL_USD", "100000"))
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
@@ -62,9 +61,9 @@ def validate_hyperliquid_config() -> None:
         raise RuntimeError("Please set HYPERLIQUID_API_KEY, HYPERLIQUID_API_SECRET, and HYPERLIQUID_WALLET_ADDRESS in your environment.")
 
 
-def validate_gemini_config() -> None:
-    if not GEMINI_API_KEY:
-        raise RuntimeError("Please set GEMINI_API_KEY in your environment.")
+def validate_openai_config() -> None:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("Please set OPENAI_API_KEY in your environment.")
 
 
 def validate_oanda_config() -> None:
