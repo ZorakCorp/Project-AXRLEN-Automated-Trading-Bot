@@ -101,6 +101,9 @@ Safety (start safe, then loosen only if you understand the risks):
 - `MAX_LEVERAGE=10`
 - `ALLOW_UNPROTECTED_POSITIONS=false`
 
+Execution (optional):
+- `ORDER_LEVERAGE=10` (requested order leverage; the bot clamps this to `MAX_LEVERAGE`)
+
 Optional gates:
 - `DISABLE_RED_DAY_GATE=true` (disables the astrology “red day” trading halt)
 
@@ -142,6 +145,7 @@ If you want to force the bot to trade *without* protective TP/SL (not recommende
 - `ALLOW_UNPROTECTED_POSITIONS` (default `false`)
 - `MAX_NOTIONAL_PCT` (default `0.10`)
 - `MAX_LEVERAGE` (default `10`)
+- `ORDER_LEVERAGE` (default `25`, clamped to `MAX_LEVERAGE`)
 
 State/logging:
 
