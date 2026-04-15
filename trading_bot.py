@@ -35,6 +35,8 @@ from raw_data_engine import RawDataIngestion
 from signal_engine import RiskEngine, run_probability
 from state_store import append_jsonl, load_json, save_json
 from discord_notifier import DiscordNotifier
+from discord_dm_commands import DiscordDMCommandBot
+from stats_service import iter_pnls_from_journal, summarize_pnl
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +399,8 @@ class TradeManager:
         self.last_trade_closed_at_ts = 0  # unix seconds
         self.last_order_submit_at_ts = 0  # unix seconds (prevents duplicate submits)
         self.notifier = DiscordNotifier()
+        self.dm_bot = DiscordDMCommandBot(journal_path=os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl"))
+        self._last_daily_report_ymd = ""  # "YYYY-MM-DD" in America/New_York
 
         self.state_path = os.getenv("BOT_STATE_PATH", "bot_state.json")
         self.journal_path = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
@@ -463,6 +467,7 @@ class TradeManager:
         self.weekly_loss = float(state.get("weekly_loss", 0.0) or 0.0)
         self.trade_log = list(state.get("trade_log", []) or [])
         self.active_position = state.get("active_position")
+        self._last_daily_report_ymd = str(state.get("last_daily_report_ymd", "") or "")
         try:
             self.last_trade_closed_at_ts = int(state.get("last_trade_closed_at_ts", 0) or 0)
         except Exception:
@@ -489,6 +494,7 @@ class TradeManager:
             "active_position": self.active_position,
             "last_trade_closed_at_ts": int(self.last_trade_closed_at_ts),
             "last_order_submit_at_ts": int(self.last_order_submit_at_ts),
+            "last_daily_report_ymd": self._last_daily_report_ymd,
         }
         try:
             save_json(self.state_path, state)
@@ -622,18 +628,35 @@ class TradeManager:
         # Get dynamic TP/SL from AI recommendation
         tp_sl = context.get("tp_sl_recommendation", {}) or {}
         tp_percent = float(tp_sl.get("take_profit_percentage", DEFAULT_TAKE_PROFIT_PCT) or DEFAULT_TAKE_PROFIT_PCT)
-        sl_percent = float(tp_sl.get("stop_loss_percentage", DEFAULT_STOP_LOSS_PCT) or DEFAULT_STOP_LOSS_PCT)
-        sl_percent = max(0.01, min(5.0, sl_percent))
         tp_percent = max(0.01, min(10.0, tp_percent))
 
-        stop_distance = self.calculate_stop_distance(df, sl_percent=sl_percent)
+        # Stop loss: most recent low/high (configurable lookback), with optional buffer.
+        stop_lookback = int(os.getenv("STOP_RECENT_LOOKBACK_CANDLES", "1"))
+        stop_buffer_pct = float(os.getenv("STOP_RECENT_BUFFER_PCT", "0.00"))
+        stop_loss = None
+        try:
+            lb = max(1, min(len(df), stop_lookback))
+            recent = df.tail(lb)
+            if classification == "LONG":
+                stop_loss = float(recent["low"].min()) * (1 - stop_buffer_pct / 100.0)
+            else:
+                stop_loss = float(recent["high"].max()) * (1 + stop_buffer_pct / 100.0)
+        except Exception:
+            stop_loss = None
+
+        # If we couldn't compute from candles, fall back to a percent distance.
+        if stop_loss is None:
+            stop_distance = self.calculate_stop_distance(df, sl_percent=DEFAULT_STOP_LOSS_PCT)
+            stop_loss = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
+
+        stop_loss = round(float(stop_loss), 2)
+        stop_distance = abs(last_price - float(stop_loss))
         position_size = self.risk_engine.position_size(score, stop_distance, last_price)
         position_size = min(position_size, CAPITAL_USD * MAX_NOTIONAL_PCT)
         if position_size <= 0:
             logger.info("Calculated position size is zero, skipping trade")
             return
 
-        stop_loss = round(last_price - stop_distance if classification == "LONG" else last_price + stop_distance, 2)
         take_profit = round(
             last_price + last_price * (tp_percent / 100)
             if classification == "LONG"
@@ -724,6 +747,7 @@ class TradeManager:
 
     def run(self, interval_seconds: int = 60):
         logger.info("Starting trade loop for %s", MARKET_SYMBOL)
+        self.dm_bot.start()
         while True:
             try:
                 # When a position is open, do NOT re-evaluate constantly. We only poll for
@@ -733,6 +757,7 @@ class TradeManager:
                 else:
                     probability, df, context = self.evaluate_market()
                     self.execute_signal(probability, df, context)
+                self._maybe_send_daily_report()
             except Exception as exc:
                 logger.exception("Error during trade loop: %s", exc)
                 self.notifier.send(f"[AXRLEN] ERROR in trade loop: {str(exc)[:300]}")
@@ -777,3 +802,28 @@ class TradeManager:
                 sleep_for = interval_seconds
 
             time.sleep(int(sleep_for))
+
+    def _maybe_send_daily_report(self) -> None:
+        enabled = os.getenv("DISCORD_DAILY_REPORT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+        if not enabled:
+            return
+        try:
+            from zoneinfo import ZoneInfo  # py3.9+
+
+            tz = ZoneInfo("America/New_York")
+            now_local = datetime.now(tz)
+            report_hour = int(os.getenv("DISCORD_DAILY_REPORT_HOUR_LOCAL", "20"))
+            if now_local.hour != report_hour:
+                return
+            ymd = now_local.strftime("%Y-%m-%d")
+            if self._last_daily_report_ymd == ymd:
+                return
+            pnls = iter_pnls_from_journal(self.journal_path)
+            summary = summarize_pnl(pnls, now=datetime.now(timezone.utc), window="day")
+            self.notifier.send(
+                f"[AXRLEN] Daily PnL ({ymd}): {summary['pnl']:.4f} USD | trades={summary['trades']} | winrate={summary['winrate_pct']:.2f}%"
+            )
+            self._last_daily_report_ymd = ymd
+            self._save_state()
+        except Exception:
+            return

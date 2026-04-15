@@ -207,9 +207,9 @@ class OpenAIClient:
         system_prompt = (
             "You are a professional trading risk manager. "
             "Return only JSON with no markdown or explanation. "
-            "Based on market context, determine optimal take profit and stop loss percentages. "
-            "The fields must be: take_profit_percentage (0.1-5.0), stop_loss_percentage (0.1-2.0), "
-            "rationale (one sentence)."
+            "Based on market context, determine a SINGLE reasonable take profit percentage. "
+            "We will set stop loss separately in code. "
+            "The fields must be: take_profit_percentage (0.1-5.0), rationale (one sentence)."
         )
         user_message = f"Market context: {json.dumps(context)}"
         result = self.call(system_prompt, user_message)
@@ -223,10 +223,8 @@ class OpenAIClient:
                 return float(default)
 
         tp = _safe_float(result.get("take_profit_percentage", 0.5) if isinstance(result, dict) else 0.5, 0.5)
-        sl = _safe_float(result.get("stop_loss_percentage", 0.3) if isinstance(result, dict) else 0.3, 0.3)
 
         tp = max(0.1, min(5.0, tp))
-        sl = max(0.1, min(2.0, sl))
 
         rationale = ""
         if isinstance(result, dict):
@@ -234,7 +232,6 @@ class OpenAIClient:
 
         return {
             "take_profit_percentage": tp,
-            "stop_loss_percentage": sl,
             "rationale": rationale or "AI-determined levels",
         }
 

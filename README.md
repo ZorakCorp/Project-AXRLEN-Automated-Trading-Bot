@@ -127,6 +127,11 @@ Discord alerts (optional):
   - `DISCORD_USER_ID=<your discord user id>`
 - `DISCORD_MIN_ALERT_INTERVAL_SECONDS=30`
 
+Discord commands + daily report (optional):
+- `DISCORD_COMMANDS_ENABLED=true` (enables DM commands)
+- `DISCORD_DAILY_REPORT_ENABLED=true` (sends daily PnL summary)
+- `DISCORD_DAILY_REPORT_HOUR_LOCAL=20` (8PM America/New_York)
+
 ### Step 5: First run in dry-run
 
 Leave:
@@ -177,6 +182,12 @@ Discord alerts:
 - `DISCORD_BOT_TOKEN` (optional)
 - `DISCORD_USER_ID` (optional)
 - `DISCORD_MIN_ALERT_INTERVAL_SECONDS` (default `30`)
+
+Discord commands + reports:
+- `DISCORD_COMMANDS_ENABLED` (default `false`)
+- `DISCORD_MESSAGE_CONTENT_INTENT` (default `true`)
+- `DISCORD_DAILY_REPORT_ENABLED` (default `false`)
+- `DISCORD_DAILY_REPORT_HOUR_LOCAL` (default `20`)
 
 ## Notes
 
