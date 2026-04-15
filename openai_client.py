@@ -47,13 +47,45 @@ class OpenAIClient:
             raise RuntimeError("Please set OPENAI_API_KEY in your environment.")
 
     def _parse_json(self, text: str) -> Any:
+        """
+        Best-effort JSON parser.
+
+        The model is instructed to return JSON, but in failure modes it may emit
+        surrounding text, multiple JSON objects, or whitespace. We try to find
+        the first valid JSON object/array without crashing the caller.
+        """
+        stripped = (text or "").strip()
+        if not stripped:
+            return ""
+
+        # Fast path: whole string is JSON.
         try:
-            return json.loads(text)
+            return json.loads(stripped)
         except json.JSONDecodeError:
-            match = re.search(r"(\{.*\})", text, re.DOTALL)
-            if match:
+            pass
+
+        decoder = json.JSONDecoder()
+
+        # Try to decode starting from each plausible JSON start char.
+        # This avoids greedy regex extraction that can capture invalid fragments.
+        for start_char in ("{", "["):
+            idx = stripped.find(start_char)
+            while idx != -1:
+                try:
+                    obj, _end = decoder.raw_decode(stripped[idx:])
+                    return obj
+                except json.JSONDecodeError:
+                    idx = stripped.find(start_char, idx + 1)
+
+        # Last resort: attempt to pull a single {...} block (non-greedy), then decode.
+        match = re.search(r"(\{[\s\S]*?\})", stripped)
+        if match:
+            try:
                 return json.loads(match.group(1))
-            return text
+            except json.JSONDecodeError:
+                pass
+
+        return stripped
 
     def _extract_text(self, data: Dict[str, Any]) -> str:
         if not isinstance(data, dict):
@@ -81,6 +113,8 @@ class OpenAIClient:
                 {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
                 {"role": "user", "content": [{"type": "input_text", "text": user_message}]},
             ],
+            # Force valid JSON output (JSON mode). System prompts already contain "JSON".
+            "text": {"format": {"type": "json_object"}},
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
