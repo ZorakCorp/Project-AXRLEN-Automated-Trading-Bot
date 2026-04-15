@@ -53,6 +53,20 @@ Notes:
    - your main wallet address (public) as `HYPERLIQUID_WALLET_ADDRESS`
    - the API wallet **private key** as `HYPERLIQUID_API_SECRET`
 
+### Step 2.5: Fund your Hyperliquid account (add money)
+
+Hyperliquid is funded via **onchain deposits**. Do this carefully:
+
+1) In the Hyperliquid web app, open **Deposit** (usually under Portfolio/Wallet).
+2) Copy the **deposit address** Hyperliquid shows you.
+3) From your exchange (Coinbase/Binance) or self-custody wallet (MetaMask/Rabby), **send funds to that deposit address**.
+4) **Use the exact network shown on the Hyperliquid deposit screen** (do not guess). If you use the wrong network, funds can be lost.
+5) Start with a **small test deposit**, confirm it arrives, then deposit the full amount.
+
+Notes:
+- Depositing funds is separate from creating an API wallet. Your bot will trade against the Hyperliquid account that the UI associates with your `HYPERLIQUID_WALLET_ADDRESS` and API permissions.
+- If you fund one wallet but configure the bot to use a different wallet/address, you may see no tradable balance.
+
 ### Step 3: Create a Railway project
 
 1) Go to [Railway](https://railway.app/)
