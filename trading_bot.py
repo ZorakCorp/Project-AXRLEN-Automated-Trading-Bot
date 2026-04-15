@@ -762,41 +762,6 @@ class TradeManager:
             return float(df["close"].iloc[-1]) * (sl_percent / 100)
         return float(atr) * 2
 
-    def _nearest_swing_extreme(self, df: pd.DataFrame, *, side: str, lookback: int, pivot: int) -> Optional[float]:
-        """
-        Find the most recent local swing low/high within the lookback window.
-        - For LONG (side=buy): returns a swing LOW.
-        - For SHORT (side=sell): returns a swing HIGH.
-        """
-        if df is None or len(df) == 0:
-            return None
-        need_cols = {"low", "high"}
-        if not need_cols.issubset(set(df.columns)):
-            return None
-        w = df.tail(max(1, int(lookback))).reset_index(drop=True)
-        if len(w) < (pivot * 2 + 1):
-            return None
-
-        if side == "buy":
-            lows = w["low"].astype(float).tolist()
-            # scan from most recent backwards
-            for i in range(len(lows) - pivot - 1, pivot - 1, -1):
-                center = lows[i]
-                left = lows[i - pivot : i]
-                right = lows[i + 1 : i + 1 + pivot]
-                if center < min(left) and center <= min(right):
-                    return float(center)
-            return float(min(lows)) if lows else None
-
-        highs = w["high"].astype(float).tolist()
-        for i in range(len(highs) - pivot - 1, pivot - 1, -1):
-            center = highs[i]
-            left = highs[i - pivot : i]
-            right = highs[i + 1 : i + 1 + pivot]
-            if center > max(left) and center >= max(right):
-                return float(center)
-        return float(max(highs)) if highs else None
-
     def should_halt_trading(self) -> bool:
         if self.daily_loss <= -0.05 * CAPITAL_USD:
             logger.warning("Daily drawdown limit reached: %s", self.daily_loss)
@@ -900,32 +865,14 @@ class TradeManager:
             logger.info("Calculated position size is zero, skipping trade")
             return
 
-        # Stop loss: default to nearest recent swing low/high (per user requirement).
-        stop_mode = os.getenv("STOP_MODE", "nearest_swing").strip().lower()
-        stop_lookback = int(os.getenv("STOP_RECENT_LOOKBACK_CANDLES", "50"))
-        stop_pivot = int(os.getenv("STOP_PIVOT_CANDLES", "2"))
-        stop_buffer_pct = float(os.getenv("STOP_RECENT_BUFFER_PCT", "0.00"))
-
-        side = "buy" if classification == "LONG" else "sell"
-        if stop_mode == "nearest_swing":
-            extreme = self._nearest_swing_extreme(df, side=side, lookback=stop_lookback, pivot=stop_pivot)
-            if extreme is None:
-                stop_loss = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
-            else:
-                if classification == "LONG":
-                    stop_loss = float(extreme) * (1 - stop_buffer_pct / 100.0)
-                else:
-                    stop_loss = float(extreme) * (1 + stop_buffer_pct / 100.0)
-        else:
-            stop_loss = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
-
-        stop_loss = round(float(stop_loss), 2)
+        stop_loss = round(last_price - stop_distance if classification == "LONG" else last_price + stop_distance, 2)
         take_profit = round(
             last_price + last_price * (tp_percent / 100)
             if classification == "LONG"
             else last_price - last_price * (tp_percent / 100),
             2,
         )
+        side = "buy" if classification == "LONG" else "sell"
         idempotency_key = str(uuid.uuid4())
         requested_leverage = int(os.getenv("ORDER_LEVERAGE", "25"))
         leverage = min(max(1, requested_leverage), MAX_LEVERAGE)
@@ -1028,10 +975,7 @@ class TradeManager:
             if realized_pnl is not None:
                 self.record_trade_result(float(realized_pnl))
             logger.info("Position closed by exchange: %s", latest.get("status"))
-            # Always start the post-trade cooldown window on closure (even if realized_pnl is missing).
-            self.last_trade_closed_at_ts = int(time.time())
             self.active_position = None
-            self._save_state()
 
     def monitor_pending_entry(self) -> None:
         pending = self.pending_entry or {}
