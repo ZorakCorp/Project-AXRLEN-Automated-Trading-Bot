@@ -184,9 +184,21 @@ class HyperliquidClient:
         coin = MARKET_SYMBOL
         mids = self.info.all_mids()
         mid = float(mids[self.info.name_to_coin[coin]])
+        asset = self.info.name_to_asset(coin)
+        # Hyperliquid enforces price precision; sending unrounded prices can yield "invalid price".
+        px_decimals = 2
+        try:
+            asset_to_px_decimals = getattr(self.info, "asset_to_px_decimals", None)
+            if isinstance(asset_to_px_decimals, dict) and asset in asset_to_px_decimals:
+                px_decimals = int(asset_to_px_decimals[asset])
+        except Exception:
+            px_decimals = 2
+
+        def _round_px(value: float) -> float:
+            return float(f"{float(value):.{px_decimals}f}")
 
         sz = float(size_usd) / max(mid, 1e-9)
-        sz_decimals = int(self.info.asset_to_sz_decimals[self.info.name_to_asset(coin)])
+        sz_decimals = int(self.info.asset_to_sz_decimals[asset])
         sz = float(f"{sz:.{sz_decimals}f}")
         if sz <= 0:
             raise ValueError("Calculated order size is zero after rounding.")
@@ -196,6 +208,7 @@ class HyperliquidClient:
 
         slippage = float(os.getenv("ORDER_SLIPPAGE", "0.01"))
         px = mid * (1 + slippage) if is_buy else mid * (1 - slippage)
+        px = _round_px(px)
 
         orders = [
             {
@@ -215,8 +228,8 @@ class HyperliquidClient:
             )
 
         if have_protection:
-            sl_px = float(stop_loss)
-            tp_px = float(take_profit)
+            sl_px = _round_px(float(stop_loss))
+            tp_px = _round_px(float(take_profit))
             orders.append(
                 {
                     "coin": coin,
