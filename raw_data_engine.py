@@ -129,10 +129,11 @@ class RawDataIngestion:
         vedha = self.ephemeris.calculate_vedha()
         ecl_lon = get_charged_eclipse_degree()
         orb = float(os.getenv("ECLIPSE_TRIGGER_ORB_DEG", "1.25"))
-        pancha_fire, pancha_detail = pancha_vedha_exit_long(sid, vedic_snapshot, vedha)
+        pancha_force, pancha_warn, pancha_detail = pancha_vedha_exit_long(sid, vedic_snapshot, vedha)
         ecl_fire, ecl_detail = eclipse_degree_trigger_active(sid, ecl_lon, orb_deg=orb)
         return {
-            "pancha_vedha_exit_long": pancha_fire,
+            "pancha_vedha_exit_long": pancha_force,
+            "pancha_vedha_warn_long": pancha_warn,
             "pancha_vedha_detail": pancha_detail,
             "eclipse_degree_trigger": ecl_fire,
             "eclipse_degree_detail": ecl_detail,
@@ -144,7 +145,6 @@ class RawDataIngestion:
         vedic_snapshot = self.ephemeris.get_vedic_snapshot()
         vedha = self.ephemeris.calculate_vedha()
         crypto_astro = self.ephemeris.get_crypto_astro_signals()
-        red_day = self.ephemeris.get_red_day()
         det = compute_deterministic_macro_bias(
             crypto_astro=crypto_astro,
             vedha=vedha,
@@ -163,7 +163,6 @@ class RawDataIngestion:
             "vedha": vedha,
             "crypto_astro": crypto_astro,
             "macro_bias": det,
-            "red_day": red_day,
             "risk_flags": rf,
             "eclipse_degree_trigger_active": rf.get("eclipse_degree_trigger"),
             "data_quality": {"blocking_placeholders": False, "placeholders": False, "missing": {}},
@@ -181,7 +180,6 @@ class RawDataIngestion:
         vedic_snapshot = self.ephemeris.get_vedic_snapshot()
         vedha = self.ephemeris.calculate_vedha()
         crypto_astro = self.ephemeris.get_crypto_astro_signals()
-        red_day = self.ephemeris.get_red_day()
         det = compute_deterministic_macro_bias(
             crypto_astro=crypto_astro,
             vedha=vedha,
@@ -220,7 +218,6 @@ class RawDataIngestion:
             "crypto_astro": crypto_astro,
             "macro_bias": macro_bias,
             "macro_bias_deterministic": det,
-            "red_day": red_day,
             "risk_flags": rf,
             "eclipse_degree_trigger_active": rf.get("eclipse_degree_trigger"),
             "data_quality": {

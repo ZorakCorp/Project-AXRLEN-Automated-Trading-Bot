@@ -363,6 +363,10 @@ class ProbabilityEngine:
             total += contrib
             max_abs += abs(float(signal.weight) * float(mult) * domain_w)
 
+        floor = float(os.getenv("AGGREGATE_MAX_ABS_FLOOR", "0") or "0")
+        if floor > 0:
+            max_abs = max(max_abs, floor)
+
         if max_abs <= 0:
             return 50.0
 

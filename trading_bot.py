@@ -673,11 +673,6 @@ class TradeManager:
             logger.info("Market state is FLAT, observation only")
             return
 
-        red_day = context.get("red_day", False)
-        if red_day:
-            logger.info("Red Day Gate active, skipping new positions")
-            return
-
         # Cooldown after a completed trade (defaults to 1 hour).
         post_trade_cooldown_seconds = int(os.getenv("POST_TRADE_COOLDOWN_SECONDS", "3600"))
         now_ts = int(time.time())
@@ -845,6 +840,11 @@ class TradeManager:
             rf = self.data_engine.risk_flags()
             szi = float(latest.get("size", 0) or 0)
             if szi > 0:
+                if rf.get("pancha_vedha_warn_long") and not rf.get("pancha_vedha_exit_long"):
+                    logger.info(
+                        "Pancha-style stress warning (3-of-4 axes); detail=%s",
+                        rf.get("pancha_vedha_detail"),
+                    )
                 if (
                     os.getenv("ENABLE_PANCHA_VEDHA_EXIT", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
                     and rf.get("pancha_vedha_exit_long")

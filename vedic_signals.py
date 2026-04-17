@@ -33,15 +33,15 @@ def pancha_vedha_exit_long(
     sid: Dict[str, Dict[str, Any]],
     vedic_snapshot: Dict[str, Any],
     vedha: Dict[str, Any],
-) -> Tuple[bool, Dict[str, Any]]:
+) -> Tuple[bool, bool, Dict[str, Any]]:
     """
-    Force-exit heuristic for longs when multiple stress vectors align (no name-letter: use samasaptaka as 4th axis).
+    Tiered Pancha-style exit for longs (no name-letter axis: samasaptaka / Mars–Saturn stress as fourth vector).
 
-    Fires when ALL of:
-    - bad tithi (Ashtami / Chaturdashi family),
-    - malefic conjunct Moon by sign OR within orb of Moon longitude,
-    - mars_saturn_vedha OR mars_saturn_samasaptaka,
-    - Rahu intensified / fixed-axis stress (vedha flag).
+    - ``warn``: 3 of 4 stress axes true (log / optional handling).
+    - ``force``: all 4 true (force-close in the bot when enabled).
+
+    Axes: bad tithi; malefic on Moon (sign or longitude orb); Mars–Saturn vedha or samasaptaka;
+    Rahu fixed-sign intensification (vedha flag).
     """
     tithi = int(vedic_snapshot.get("tithi") or 0)
     bad_tithi = tithi in {8, 14, 15, 23, 29, 30}
@@ -51,15 +51,19 @@ def pancha_vedha_exit_long(
     ms_stress = bool(vedha.get("mars_saturn_vedha") or vedic_snapshot.get("mars_saturn_samasaptaka_approx"))
     rahu_stress = bool(vedha.get("rahu_intensified_fixed"))
 
+    axes = (bad_tithi, mal_moon, ms_stress, rahu_stress)
+    n_hit = sum(1 for x in axes if x)
     detail = {
         "bad_tithi": bad_tithi,
         "malefic_moon_pressure": mal_moon,
         "mars_saturn_stress": ms_stress,
         "rahu_fixed_stress": rahu_stress,
+        "axes_hit": n_hit,
         "tithi": tithi,
     }
-    fire = bool(bad_tithi and mal_moon and ms_stress and rahu_stress)
-    return fire, detail
+    force = n_hit >= 4
+    warn = n_hit >= 3
+    return force, warn, detail
 
 
 def eclipse_degree_trigger_active(

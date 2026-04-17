@@ -23,7 +23,6 @@ class OpenAIClient:
         self.base_url = base_url or OPENAI_API_BASE
         self.model = model or OPENAI_API_MODEL
         self._session = self._build_session()
-        self._ensure_api_key()
 
     @staticmethod
     def _build_session() -> requests.Session:
@@ -111,6 +110,7 @@ class OpenAIClient:
         return ""
 
     def call(self, system_prompt: str, user_message: str, model: Optional[str] = None, timeout: int = 30) -> Any:
+        self._ensure_api_key()
         model_name = model or self.model
         endpoint = f"{self.base_url}/chat/completions"
         payload = {

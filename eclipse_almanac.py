@@ -81,9 +81,14 @@ def _find_last_solar_eclipse_sidereal(jd_until: float) -> Optional[Tuple[float, 
             continue
 
         xx, serr = swe.calc_ut(jd_max, swe.SUN, iflag)
-        if serr and str(serr).strip():
+        try:
+            sun_lon = float(xx[0]) % 360.0
+        except (TypeError, IndexError, ValueError):
+            logger.debug("Eclipse almanac: invalid Sun calc_ut xx=%r serr=%r", xx, serr)
             continue
-        sun_lon = float(xx[0]) % 360.0
+        if not (0.0 <= sun_lon < 360.0) or sun_lon != sun_lon:
+            logger.debug("Eclipse almanac: invalid Sun lon=%s serr=%r", sun_lon, serr)
+            continue
         return jd_max, sun_lon
 
     return None

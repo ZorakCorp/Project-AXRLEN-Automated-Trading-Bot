@@ -322,13 +322,18 @@ class EphemerisEngine:
             failed = False
             for name, ipl in bodies:
                 xx, serr = swe.calc_ut(jd, ipl, iflag)
-                if serr:
-                    es = str(serr).strip()
-                    if es:
-                        last_err = es
-                        failed = True
-                        break
-                lon = float(xx[0]) % 360.0
+                # pyswisseph may set serr to a non-zero int bitmask (e.g. Moshier fallback when DE
+                # files are missing). Positions in xx are still valid; only fail on bad xx / lon.
+                try:
+                    lon = float(xx[0]) % 360.0
+                except (TypeError, IndexError, ValueError):
+                    last_err = f"calc_ut({name}) invalid xx={xx!r} serr={serr!r}"
+                    failed = True
+                    break
+                if not (0.0 <= lon < 360.0) or lon != lon:
+                    last_err = f"calc_ut({name}) invalid lon={lon} serr={serr!r}"
+                    failed = True
+                    break
                 positions[name] = {
                     "longitude": lon,
                     "latitude": float(xx[1]),
@@ -339,10 +344,14 @@ class EphemerisEngine:
                 continue
 
             xx, serr = swe.calc_ut(jd, swe.MEAN_NODE, iflag)
-            if serr and str(serr).strip():
-                last_err = str(serr).strip()
+            try:
+                rlon = float(xx[0]) % 360.0
+            except (TypeError, IndexError, ValueError):
+                last_err = f"calc_ut(MEAN_NODE) invalid xx={xx!r} serr={serr!r}"
                 continue
-            rlon = float(xx[0]) % 360.0
+            if not (0.0 <= rlon < 360.0) or rlon != rlon:
+                last_err = f"calc_ut(MEAN_NODE) invalid lon={rlon} serr={serr!r}"
+                continue
             rretro = float(xx[3]) < 0.0
             positions["Rahu"] = {
                 "longitude": rlon,
@@ -439,6 +448,9 @@ class EphemerisEngine:
     def get_vedic_snapshot(self) -> Dict:
         """
         Sidereal ephemeris + Moon nakshatra, tithi, approximate hora, Latta kick flags, entry gates.
+
+        Lunar entry risk for new/full and inauspicious lunar days is represented by
+        ``entry_blocked_tithi`` (tithi indices including 15/30). There is no separate synodic ``red_day`` gate.
         """
         jd = self._julian_day(self.current_date)
         sid = self.get_sidereal_positions()
@@ -541,23 +553,6 @@ class EphemerisEngine:
             "saturn_in_dahana_nadi": mars_fire_stress,
             "jupiter_retro_cancer": bool(jup_rx and jup_sign == "Cancer"),
         }
-
-    def get_oil_astro_signals(self) -> Dict[str, bool]:
-        """Deprecated: Brent/oil mapping removed; use ``get_crypto_astro_signals`` for ETH."""
-        return self.get_crypto_astro_signals()
-
-    def get_red_day(self) -> bool:
-        """Determine if today is a Red Day (trading halt day)."""
-        override = os.getenv("DISABLE_RED_DAY_GATE", "").strip().lower()
-        if override in {"1", "true", "yes", "y", "on"}:
-            return False
-        # Simplified: Red Day on approximate full/new moon based on Sun/Moon separation.
-        jd = self._julian_day(self.current_date)
-        sun_lon = self._sun_ecliptic_longitude(jd)
-        moon_lon = self._moon_ecliptic_longitude(jd)
-        sep = abs((moon_lon - sun_lon + 180.0) % 360.0 - 180.0)
-        # New moon near 0°, full moon near 180°
-        return sep < 8.0 or abs(sep - 180.0) < 8.0
 
     # Backwards-compatible helper for any callers that expected a phase string.
     def _get_moon_phase(self) -> str:
