@@ -29,6 +29,16 @@ HYPERLIQUID_CANDLE_INTERVAL = os.getenv("HYPERLIQUID_CANDLE_INTERVAL", "15m").st
 ATR_STOP_MULT = float(os.getenv("ATR_STOP_MULT", "2.5"))
 # If false, TP percent comes from DEFAULT_TAKE_PROFIT_PCT only (no LLM oracle for TP).
 USE_AI_TP_SL = os.getenv("USE_AI_TP_SL", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+# If true, macro direction for AstroTimingBrain comes from OpenAI; if false, from deterministic Vedic/crypto rules.
+USE_LLM_MACRO_BIAS = os.getenv("USE_LLM_MACRO_BIAS", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+# Scale Kelly notional down by leverage so high leverage does not imply oversized margin deployment.
+RISK_ADJUST_NOTIONAL_FOR_LEVERAGE = os.getenv("RISK_ADJUST_NOTIONAL_FOR_LEVERAGE", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
 
 # Safety controls
 LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() in {"1", "true", "yes", "y", "on"}

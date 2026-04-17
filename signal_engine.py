@@ -1,4 +1,5 @@
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -134,6 +135,17 @@ class CryptoVedicBrain(BrainBase):
                     strength=-0.25,
                     weight=0.10,
                     tags=frozenset({"samasaptaka"}),
+                )
+            )
+
+        if context.get("eclipse_degree_trigger_active"):
+            signals.append(
+                Signal(
+                    name="Mars/Saturn on charged solar-eclipse degree",
+                    domain="astrology",
+                    strength=-0.45,
+                    weight=0.12,
+                    tags=frozenset({"eclipse_degree_transit"}),
                 )
             )
 
@@ -322,6 +334,8 @@ class ProbabilityEngine:
             return 50.0
         if "eclipse_axis" in tags:
             return 80.0
+        if "eclipse_degree_transit" in tags:
+            return 70.0
         if "jupiter_air" in tags:
             return 30.0
         if "Retrograde" in signal.name and "Jupiter" in signal.name:
@@ -371,7 +385,7 @@ class RiskEngine:
         self.capital = capital
         self.max_risk_pct = 0.02
 
-    def position_size(self, confidence_score: float, stop_distance: float, price: float) -> float:
+    def position_size(self, confidence_score: float, stop_distance: float, price: float, leverage: int = 1) -> float:
         if stop_distance <= 0 or price <= 0:
             return 0.0
         kelly_pct = min(self.max_risk_pct, confidence_score / 100 * 0.02)
@@ -380,6 +394,9 @@ class RiskEngine:
         # units = risk_amount / stop_distance; notional = units * price
         units = risk_amount / stop_distance
         notional = units * price
+        if os.getenv("RISK_ADJUST_NOTIONAL_FOR_LEVERAGE", "true").strip().lower() in {"1", "true", "yes", "y", "on"}:
+            lev = max(1, int(leverage))
+            notional = notional / float(lev)
         return round(max(notional, 0.0), 2)
 
     def update_capital(self, pnl: float):

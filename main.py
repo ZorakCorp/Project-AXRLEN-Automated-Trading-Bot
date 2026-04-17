@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 
 from ai_model import PredictionModel
 from config import MODEL_PATH
@@ -30,11 +31,34 @@ def run(_: argparse.Namespace):
 
 
 def calibrate(_: argparse.Namespace):
-    # Placeholder for calibration logic
-    # Analyze trade_log, adjust weights, etc.
-    logger.info("Calibration mode: Analyzing trade performance and adjusting signal weights")
-    # For now, just log
-    logger.info("Calibration complete. (Placeholder)")
+    from datetime import datetime, timezone
+
+    from raw_data_engine import RawDataIngestion
+    from state_store import save_json
+    from stats_service import iter_pnls_from_journal, summarize_pnl
+
+    journal = os.getenv("BOT_JOURNAL_PATH", "bot_journal.jsonl")
+    pnls = list(iter_pnls_from_journal(journal))
+    now = datetime.now(timezone.utc)
+    summary = summarize_pnl(pnls, now=now, window="month")
+    report = {
+        "journal_path": journal,
+        "pnl_window": "month",
+        "summary": summary,
+        "trades_in_journal": len(pnls),
+    }
+    out_path = os.getenv("CALIBRATION_OUT_PATH", "calibration_out.json")
+
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.warning("OPENAI_API_KEY unset; writing report JSON without LLM diagnostic.")
+        save_json(out_path, {"report": report, "diagnostic": None})
+        logger.info("Calibration report written to %s", out_path)
+        return
+
+    engine = RawDataIngestion()
+    diagnostic = engine.run_calibration_analysis(report)
+    save_json(out_path, {"report": report, "diagnostic": diagnostic})
+    logger.info("Calibration diagnostic written to %s", out_path)
 
 
 def parse_args():

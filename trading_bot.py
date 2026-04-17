@@ -44,6 +44,30 @@ from stats_service import iter_pnls_from_journal, summarize_pnl
 logger = logging.getLogger(__name__)
 
 
+def _last_pivot_extreme(df: pd.DataFrame, classification: str, left: int, right: int) -> Optional[float]:
+    """Most recent fractal pivot low (LONG) or pivot high (SHORT) before the last bar."""
+    if df is None or len(df) < left + right + 3:
+        return None
+    if "low" not in df.columns or "high" not in df.columns:
+        return None
+    lows = df["low"].astype(float)
+    highs = df["high"].astype(float)
+    n = len(df)
+    if classification == "LONG":
+        for i in range(n - right - 1, left, -1):
+            seg = lows.iloc[i - left : i + right + 1]
+            li = float(lows.iloc[i])
+            if li <= float(seg.min()) + 1e-12 and li <= float(lows.iloc[i - 1]) and li <= float(lows.iloc[i + 1]):
+                return li
+    else:
+        for i in range(n - right - 1, left, -1):
+            seg = highs.iloc[i - left : i + right + 1]
+            hi = float(highs.iloc[i])
+            if hi >= float(seg.max()) - 1e-12 and hi >= float(highs.iloc[i - 1]) and hi >= float(highs.iloc[i + 1]):
+                return hi
+    return None
+
+
 def _candle_interval_ms(interval: str) -> int:
     s = (interval or "15m").strip().lower()
     try:
@@ -680,19 +704,30 @@ class TradeManager:
             tp_percent = float(DEFAULT_TAKE_PROFIT_PCT)
         tp_percent = max(0.01, min(10.0, tp_percent))
 
-        # Stop loss: most recent low/high (configurable lookback), with optional buffer.
-        stop_lookback = int(os.getenv("STOP_RECENT_LOOKBACK_CANDLES", "1"))
+        # Stop loss: pivot swing (preferred) or rolling window low/high, then ATR floor below.
         stop_buffer_pct = float(os.getenv("STOP_RECENT_BUFFER_PCT", "0.00"))
         stop_loss = None
-        try:
-            lb = max(1, min(len(df), stop_lookback))
-            recent = df.tail(lb)
-            if classification == "LONG":
-                stop_loss = float(recent["low"].min()) * (1 - stop_buffer_pct / 100.0)
-            else:
-                stop_loss = float(recent["high"].max()) * (1 + stop_buffer_pct / 100.0)
-        except Exception:
-            stop_loss = None
+        use_pivots = os.getenv("STOP_USE_PIVOTS", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+        left_b = int(os.getenv("PIVOT_STOP_LEFT", "2"))
+        right_b = int(os.getenv("PIVOT_STOP_RIGHT", "2"))
+        if use_pivots:
+            px = _last_pivot_extreme(df, classification, left_b, right_b)
+            if px is not None:
+                if classification == "LONG":
+                    stop_loss = float(px) * (1 - stop_buffer_pct / 100.0)
+                else:
+                    stop_loss = float(px) * (1 + stop_buffer_pct / 100.0)
+        if stop_loss is None:
+            stop_lookback = int(os.getenv("STOP_RECENT_LOOKBACK_CANDLES", "24"))
+            try:
+                lb = max(1, min(len(df), stop_lookback))
+                recent = df.tail(lb)
+                if classification == "LONG":
+                    stop_loss = float(recent["low"].min()) * (1 - stop_buffer_pct / 100.0)
+                else:
+                    stop_loss = float(recent["high"].max()) * (1 + stop_buffer_pct / 100.0)
+            except Exception:
+                stop_loss = None
 
         # Also compute an ATR-style distance; use whichever yields the wider (safer) stop.
         atr_distance = self.calculate_stop_distance(df, sl_percent=DEFAULT_STOP_LOSS_PCT)
@@ -719,7 +754,17 @@ class TradeManager:
                 stop_loss = round(float(last_price + min_required), 2)
             stop_distance = abs(last_price - float(stop_loss))
 
-        position_size = self.risk_engine.position_size(score, stop_distance, last_price)
+        requested_leverage = int(os.getenv("ORDER_LEVERAGE", "25"))
+        leverage = min(max(1, requested_leverage), MAX_LEVERAGE)
+        if leverage != requested_leverage:
+            logger.warning(
+                "ORDER_LEVERAGE=%s is outside allowed range; using leverage=%s (MAX_LEVERAGE=%s)",
+                requested_leverage,
+                leverage,
+                MAX_LEVERAGE,
+            )
+
+        position_size = self.risk_engine.position_size(score, stop_distance, last_price, leverage=leverage)
         position_size = min(position_size, CAPITAL_USD * MAX_NOTIONAL_PCT)
         if position_size <= 0:
             logger.info("Calculated position size is zero, skipping trade")
@@ -733,15 +778,6 @@ class TradeManager:
         )
         side = "buy" if classification == "LONG" else "sell"
         idempotency_key = str(uuid.uuid4())
-        requested_leverage = int(os.getenv("ORDER_LEVERAGE", "25"))
-        leverage = min(max(1, requested_leverage), MAX_LEVERAGE)
-        if leverage != requested_leverage:
-            logger.warning(
-                "ORDER_LEVERAGE=%s is outside allowed range; using leverage=%s (MAX_LEVERAGE=%s)",
-                requested_leverage,
-                leverage,
-                MAX_LEVERAGE,
-            )
 
         logger.info(
             "Submitting %s order, size=%s, stop=%s, tp=%s, idempotency=%s",
@@ -804,6 +840,51 @@ class TradeManager:
 
         if latest.get("unrealized_pnl") is not None:
             logger.info("Position PnL: %s", latest.get("unrealized_pnl"))
+
+        try:
+            rf = self.data_engine.risk_flags()
+            szi = float(latest.get("size", 0) or 0)
+            if szi > 0:
+                if (
+                    os.getenv("ENABLE_PANCHA_VEDHA_EXIT", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+                    and rf.get("pancha_vedha_exit_long")
+                ):
+                    logger.warning("Pancha-style stress exit: force-closing long")
+                    self.notifier.send(f"[AXRLEN] Pancha Vedha exit — closing long {MARKET_SYMBOL}")
+                    append_jsonl(
+                        self.journal_path,
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "pancha_vedha_exit",
+                            "symbol": MARKET_SYMBOL,
+                            "detail": rf.get("pancha_vedha_detail"),
+                        },
+                    )
+                    self.client.close_position(str(latest.get("id", MARKET_SYMBOL)))
+                    self.active_position = None
+                    self._save_state()
+                    return
+                if (
+                    os.getenv("ENABLE_ECLIPSE_DEGREE_EXIT", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
+                    and rf.get("eclipse_degree_trigger")
+                ):
+                    logger.warning("Eclipse-degree trigger: force-closing long")
+                    self.notifier.send(f"[AXRLEN] Eclipse-degree exit — closing long {MARKET_SYMBOL}")
+                    append_jsonl(
+                        self.journal_path,
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "eclipse_degree_exit",
+                            "symbol": MARKET_SYMBOL,
+                            "detail": rf.get("eclipse_degree_detail"),
+                        },
+                    )
+                    self.client.close_position(str(latest.get("id", MARKET_SYMBOL)))
+                    self.active_position = None
+                    self._save_state()
+                    return
+        except Exception as exc:
+            logger.warning("Vedic exit evaluation failed: %s", exc)
 
         if latest.get("status") != "open":
             realized_pnl = latest.get("realized_pnl")
