@@ -30,6 +30,20 @@ def create_target(df: pd.DataFrame, threshold: float = 0.002) -> pd.Series:
     return signal[:-1]
 
 
+def create_target_3way(df: pd.DataFrame, threshold: float = 0.002) -> pd.Series:
+    """
+    3-class target:
+    - 1  => LONG  (future_return > +threshold)
+    - -1 => SHORT (future_return < -threshold)
+    - 0  => HOLD  (otherwise)
+    """
+    future_return = df["close"].shift(-1) / df["close"] - 1
+    target = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
+    target[future_return > threshold] = 1
+    target[future_return < -threshold] = -1
+    return target[:-1]
+
+
 class PredictionModel:
     def __init__(self, model_path: Optional[str] = None):
         self.model_path = model_path
@@ -40,7 +54,8 @@ class PredictionModel:
 
     def train(self, df: pd.DataFrame) -> None:
         df = create_features(df)
-        target = create_target(df)
+        # Prefer 3-way target when training from scratch.
+        target = create_target_3way(df)
         features = df.loc[:-2, ["return_1", "ma_5", "ma_10", "momentum", "volatility", "volume_change"]]
         self.pipeline.fit(features, target)
         logger.info("Model training complete")
@@ -65,4 +80,8 @@ class PredictionModel:
 
     def predict_label(self, df: pd.DataFrame) -> str:
         signal = self.predict(df)
-        return "LONG" if signal == 1 else "HOLD"
+        if signal == 1:
+            return "LONG"
+        if signal == -1:
+            return "SHORT"
+        return "HOLD"

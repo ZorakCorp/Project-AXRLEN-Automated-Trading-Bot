@@ -15,10 +15,12 @@ from urllib3.util.retry import Retry
 from eth_account import Account
 from ai_model import PredictionModel
 from config import (
+    ATR_STOP_MULT,
     CAPITAL_USD,
     HYPERLIQUID_API_BASE,
     HYPERLIQUID_API_KEY,
     HYPERLIQUID_API_SECRET,
+    HYPERLIQUID_CANDLE_INTERVAL,
     HYPERLIQUID_WALLET_ADDRESS,
     LIVE_TRADING,
     MAX_NOTIONAL_PCT,
@@ -29,6 +31,7 @@ from config import (
     DEFAULT_TAKE_PROFIT_PCT,
     MARKET_SYMBOL,
     MODEL_PATH,
+    USE_AI_TP_SL,
     validate_hyperliquid_config,
 )
 from raw_data_engine import RawDataIngestion
@@ -39,6 +42,21 @@ from discord_dm_commands import DiscordDMCommandBot
 from stats_service import iter_pnls_from_journal, summarize_pnl
 
 logger = logging.getLogger(__name__)
+
+
+def _candle_interval_ms(interval: str) -> int:
+    s = (interval or "15m").strip().lower()
+    try:
+        if s.endswith("m"):
+            return max(60_000, int(s[:-1]) * 60_000)
+        if s.endswith("h"):
+            return max(60_000, int(s[:-1]) * 3_600_000)
+        if s.endswith("d"):
+            return max(60_000, int(s[:-1]) * 86_400_000)
+    except ValueError:
+        pass
+    return 60_000
+
 
 try:
     from hyperliquid.exchange import Exchange
@@ -109,8 +127,10 @@ class HyperliquidClient:
             )
 
     def fetch_history(self, symbol: str = MARKET_SYMBOL, limit: int = 300) -> dict:
+        interval = HYPERLIQUID_CANDLE_INTERVAL
+        bar_ms = _candle_interval_ms(interval)
         if self.info is None:
-            dates = pd.date_range("2024-01-01", periods=limit, freq="1min")
+            dates = pd.date_range("2024-01-01", periods=limit, freq=f"{max(1, bar_ms // 60_000)}min")
             return {
                 "candles": [
                     {
@@ -126,8 +146,8 @@ class HyperliquidClient:
             }
 
         end_ms = int(time.time() * 1000)
-        start_ms = end_ms - limit * 60_000
-        candles = self.info.candles_snapshot(symbol, interval="1m", startTime=start_ms, endTime=end_ms)
+        start_ms = end_ms - limit * bar_ms
+        candles = self.info.candles_snapshot(symbol, interval=interval, startTime=start_ms, endTime=end_ms)
         normalized = []
         for c in candles:
             normalized.append(
@@ -541,7 +561,7 @@ class TradeManager:
         atr = df["high_low"].rolling(14).mean().iloc[-1]
         if pd.isna(atr) or atr <= 0:
             return float(df["close"].iloc[-1]) * (sl_percent / 100)
-        return float(atr) * 2
+        return float(atr) * float(ATR_STOP_MULT)
 
     def should_halt_trading(self) -> bool:
         if self.daily_loss <= -0.05 * CAPITAL_USD:
@@ -580,6 +600,34 @@ class TradeManager:
         if self.should_halt_trading():
             logger.info("Halting new trades due to drawdown limit")
             return
+
+        # Fail-closed on known-placeholder context (prevents trading on fabricated defaults).
+        # RawDataIngestion marks placeholder ingestion explicitly.
+        dq = context.get("data_quality", {}) if isinstance(context, dict) else {}
+        blocking = bool(dq.get("blocking_placeholders", dq.get("placeholders")))
+        missing = (dq.get("missing") if isinstance(dq, dict) else None) or {}
+        allow_placeholders = os.getenv("ALLOW_PLACEHOLDER_FEEDS", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+        if blocking and not allow_placeholders:
+            logger.warning(
+                "Refusing to trade: blocking placeholder data (missing=%s). Set ALLOW_PLACEHOLDER_FEEDS=true to override.",
+                missing,
+            )
+            return
+
+        vs = context.get("vedic_snapshot") if isinstance(context, dict) else None
+        if isinstance(vs, dict):
+            if os.getenv("BLOCK_SATURN_HORA_ENTRIES", "true").strip().lower() in {"1", "true", "yes", "y", "on"}:
+                if vs.get("entry_blocked_saturn_hora"):
+                    logger.info("Vedic gate: Saturn hora — skipping new entry")
+                    return
+            if os.getenv("BLOCK_INAUSPICIOUS_TITHI_ENTRIES", "true").strip().lower() in {"1", "true", "yes", "y", "on"}:
+                if vs.get("entry_blocked_tithi"):
+                    logger.info("Vedic gate: inauspicious tithi — skipping new entry")
+                    return
+            if os.getenv("REQUIRE_JUPITER_MARS_HORA", "false").strip().lower() in {"1", "true", "yes", "y", "on"}:
+                if not vs.get("entry_favorable_hora"):
+                    logger.info("Vedic gate: Jupiter/Mars hora required — skipping new entry")
+                    return
 
         # If the container restarted or local state is stale, reconcile against live exchange state
         # to avoid placing duplicate entry+TP/SL bundles.
@@ -625,9 +673,11 @@ class TradeManager:
                 return
 
         last_price = float(df["close"].iloc[-1])
-        # Get dynamic TP/SL from AI recommendation
         tp_sl = context.get("tp_sl_recommendation", {}) or {}
-        tp_percent = float(tp_sl.get("take_profit_percentage", DEFAULT_TAKE_PROFIT_PCT) or DEFAULT_TAKE_PROFIT_PCT)
+        if USE_AI_TP_SL and not (isinstance(tp_sl, dict) and tp_sl.get("_unavailable")):
+            tp_percent = float(tp_sl.get("take_profit_percentage", DEFAULT_TAKE_PROFIT_PCT) or DEFAULT_TAKE_PROFIT_PCT)
+        else:
+            tp_percent = float(DEFAULT_TAKE_PROFIT_PCT)
         tp_percent = max(0.01, min(10.0, tp_percent))
 
         # Stop loss: most recent low/high (configurable lookback), with optional buffer.
@@ -644,10 +694,14 @@ class TradeManager:
         except Exception:
             stop_loss = None
 
-        # If we couldn't compute from candles, fall back to a percent distance.
+        # Also compute an ATR-style distance; use whichever yields the wider (safer) stop.
+        atr_distance = self.calculate_stop_distance(df, sl_percent=DEFAULT_STOP_LOSS_PCT)
         if stop_loss is None:
-            stop_distance = self.calculate_stop_distance(df, sl_percent=DEFAULT_STOP_LOSS_PCT)
-            stop_loss = last_price - stop_distance if classification == "LONG" else last_price + stop_distance
+            stop_loss = last_price - atr_distance if classification == "LONG" else last_price + atr_distance
+        else:
+            extreme_distance = abs(last_price - float(stop_loss))
+            desired = max(float(extreme_distance), float(atr_distance))
+            stop_loss = last_price - desired if classification == "LONG" else last_price + desired
 
         stop_loss = round(float(stop_loss), 2)
         stop_distance = abs(last_price - float(stop_loss))

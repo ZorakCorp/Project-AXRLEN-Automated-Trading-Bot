@@ -88,33 +88,40 @@ class OpenAIClient:
         return stripped
 
     def _extract_text(self, data: Dict[str, Any]) -> str:
+        """
+        Extract assistant text from Chat Completions responses.
+
+        Expected shape:
+        {
+          "choices": [{"message": {"role": "assistant", "content": "..."}, ...}],
+          ...
+        }
+        """
         if not isinstance(data, dict):
             return ""
-        if isinstance(data.get("output_text"), str) and data.get("output_text"):
-            return data["output_text"]
-        output = data.get("output")
-        if isinstance(output, list):
-            for item in output:
-                content = item.get("content") if isinstance(item, dict) else None
-                if isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "output_text":
-                            text = part.get("text")
-                            if isinstance(text, str) and text:
-                                return text
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                msg = first.get("message")
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+                    if isinstance(content, str) and content.strip():
+                        return content
         return ""
 
     def call(self, system_prompt: str, user_message: str, model: Optional[str] = None, timeout: int = 30) -> Any:
         model_name = model or self.model
-        endpoint = f"{self.base_url}/responses"
+        endpoint = f"{self.base_url}/chat/completions"
         payload = {
             "model": model_name,
-            "input": [
-                {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": user_message}]},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
             ],
-            # Force valid JSON output (JSON mode). System prompts already contain "JSON".
-            "text": {"format": {"type": "json_object"}},
+            # Force valid JSON output. Chat Completions supports response_format JSON mode.
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -132,13 +139,13 @@ class OpenAIClient:
     # ---- Domain helpers (kept signature-compatible with the previous Gemini client) ----
     def classify_news_sentiment(self, text: str) -> Dict[str, Any]:
         system_prompt = (
-            "You are a structured signal extractor for oil trading. "
+            "You are a structured signal extractor for cryptocurrency (ETH) macro headlines. "
             "Return only JSON with no markdown or explanation. "
             "The fields must be: direction (bullish, bearish, neutral), magnitude (1-10), "
-            "category (supply disruption, demand change, geopolitical friction, sanctions, weather event, other), "
+            "category (rates_liquidity, regulation, security_incident, etf_flows, macro_risk_off, other), "
             "one_sentence_reason."
         )
-        user_message = f"Classify this news item for Brent oil: {text}"
+        user_message = f"Classify this news item for ETH/crypto: {text}"
         result = self.call(system_prompt, user_message)
         return {
             "direction": result.get("direction", "neutral"),
@@ -149,10 +156,10 @@ class OpenAIClient:
 
     def interpret_leader_dasha(self, leader_context: Dict[str, Any]) -> Dict[str, Any]:
         system_prompt = (
-            "You are a geopolitical analyst for oil trading. "
+            "You are a policy-risk analyst for digital asset markets (ETH). "
             "Return only JSON with no markdown or explanation. "
             "The output fields must be: likely_action, probability (0-100), "
-            "risk_category (supply_cut, military_posturing, policy_stability, neutral), one_sentence_summary."
+            "risk_category (liquidity_tightening, regulatory_clamp, stability, neutral), one_sentence_summary."
         )
         user_message = f"Leader Dasha context: {json.dumps(leader_context)}"
         result = self.call(system_prompt, user_message)
@@ -165,7 +172,9 @@ class OpenAIClient:
 
     def macro_bias_statement(self, macro_context: Dict[str, Any]) -> Dict[str, Any]:
         system_prompt = (
-            "You are a macro bias synthesizer for Brent oil. "
+            "You are a macro bias synthesizer for ETH using structured Vedic sidereal inputs only. "
+            "Do not invent planetary positions; reason only from the JSON fields provided "
+            "(vedic_snapshot, vedha, crypto_astro, astro positions). "
             "Return only JSON with no markdown or explanation. "
             "The output fields must be: statement, direction (bullish, bearish, neutral), "
             "confidence (1-10)."
@@ -180,7 +189,7 @@ class OpenAIClient:
 
     def calibration_diagnostic(self, report: Dict[str, Any]) -> Dict[str, Any]:
         system_prompt = (
-            "You are a calibration analyst for a Vedic oil trading system. "
+            "You are a calibration analyst for a Vedic-informed ETH trading system. "
             "Return only JSON with no markdown or explanation. "
             "The output fields must be: diagnostic_summary, "
             "weight_adjustments (list of {domain, adjustment, reason}), "
@@ -205,10 +214,10 @@ class OpenAIClient:
 
     def get_tp_sl_levels(self, context: Dict[str, Any]) -> Dict[str, Any]:
         system_prompt = (
-            "You are a professional trading risk manager. "
+            "You are a professional trading risk manager for ETH perps. "
             "Return only JSON with no markdown or explanation. "
-            "Based on market context, determine a SINGLE reasonable take profit percentage. "
-            "We will set stop loss separately in code. "
+            "Using only the supplied context (no invented prices), propose a single take-profit "
+            "distance as a percent of entry. Stops are computed in code from ATR/volatility. "
             "The fields must be: take_profit_percentage (0.1-5.0), rationale (one sentence)."
         )
         user_message = f"Market context: {json.dumps(context)}"

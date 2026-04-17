@@ -23,6 +23,12 @@ MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "ETH")
 CAPITAL_USD = float(os.getenv("CAPITAL_USD", "100000"))
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
 HYPERLIQUID_API_BASE = _normalize_base_url(os.getenv("HYPERLIQUID_API_BASE", "https://api.hyperliquid.xyz"))
+# Candle interval for signal + risk math (Hyperliquid supports 1m/5m/15m/1h/4h etc.).
+HYPERLIQUID_CANDLE_INTERVAL = os.getenv("HYPERLIQUID_CANDLE_INTERVAL", "15m").strip() or "15m"
+# ATR multiple for minimum structural stop distance (fallback path in TradeManager).
+ATR_STOP_MULT = float(os.getenv("ATR_STOP_MULT", "2.5"))
+# If false, TP percent comes from DEFAULT_TAKE_PROFIT_PCT only (no LLM oracle for TP).
+USE_AI_TP_SL = os.getenv("USE_AI_TP_SL", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 # Safety controls
 LIVE_TRADING = os.getenv("LIVE_TRADING", "false").strip().lower() in {"1", "true", "yes", "y", "on"}

@@ -14,25 +14,15 @@ class LeaderProfile:
 
 
 class LeaderDashaEngine:
+    """
+    Optional natal Vimshottari-style context for named profiles.
+
+    Default is empty for the ETH bot path (no synthetic “OPEC chair” dasha).
+    Pass real ``LeaderProfile`` rows if you want this layer active.
+    """
+
     def __init__(self, leaders: Optional[List[LeaderProfile]] = None):
-        self.leaders = leaders or [
-            LeaderProfile(
-                name="OPEC Chair",
-                role="OPEC Chair",
-                country="Saudi Arabia",
-                birth_date="1960-01-01",
-                birth_time="12:00",
-                birth_place="Riyadh",
-            ),
-            LeaderProfile(
-                name="Major Oil Minister",
-                role="Energy Minister",
-                country="Russia",
-                birth_date="1965-01-01",
-                birth_time="12:00",
-                birth_place="Moscow",
-            ),
-        ]
+        self.leaders = leaders or []
 
     def compute_dasha(self, leader: LeaderProfile) -> Dict[str, str]:
         # Placeholder implementation. Replace with a real Vimshottari Dasha calculator.
@@ -49,7 +39,7 @@ class LeaderDashaEngine:
             "antar": antar,
             "pratyaantar": pratyaantar,
             "transition_window_hours": 72,
-            "note": "Placeholder dasha context; replace with actual mahadasha calculation.",
+            "note": "Heuristic dasha labels for optional leader profiles; not a full Vimshottari engine.",
         }
 
     def get_leader_contexts(self) -> List[Dict[str, str]]:
