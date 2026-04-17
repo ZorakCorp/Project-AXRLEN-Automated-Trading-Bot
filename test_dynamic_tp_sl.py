@@ -5,8 +5,45 @@ Smoke test: ephemeris Vedic snapshot + optional full RawDataIngestion when OPENA
 
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_swiss_reference_april_2026() -> bool:
+    """Regression: Swiss sidereal signs for a fixed instant (Drik / Lahiri cross-check)."""
+    try:
+        import swisseph as swe  # noqa: F401
+    except ImportError:
+        print("SKIP: pyswisseph not installed — reference test skipped")
+        return True
+
+    from ephemeris_engine import EphemerisEngine
+
+    e = EphemerisEngine()
+    if not e._swiss_available:
+        print("SKIP: Swiss ephemeris disabled — reference test skipped")
+        return True
+
+    e.current_date = datetime(2026, 4, 17, 12, 0, 0, tzinfo=timezone.utc)
+    sid = e.get_sidereal_positions()
+    checks = (
+        ("Jupiter", "Gemini"),
+        ("Mars", "Pisces"),
+        ("Saturn", "Pisces"),
+        ("Rahu", "Aquarius"),
+        ("Sun", "Aries"),
+        ("Moon", "Aries"),
+        ("Mercury", "Pisces"),
+        ("Venus", "Aries"),
+    )
+    for planet, expect_sign in checks:
+        got = (sid.get(planet) or {}).get("sign")
+        if got != expect_sign:
+            print(f"ERROR: {planet} sign {got!r} != {expect_sign!r} (full row={sid.get(planet)})")
+            return False
+    print("Swiss reference OK (2026-04-17 12:00 UTC sidereal signs)")
+    return True
 
 
 def test_ephemeris_vedic() -> bool:
@@ -60,5 +97,5 @@ def test_build_context_if_openai() -> bool:
 
 
 if __name__ == "__main__":
-    ok = test_ephemeris_vedic() and test_build_context_if_openai()
+    ok = test_swiss_reference_april_2026() and test_ephemeris_vedic() and test_build_context_if_openai()
     raise SystemExit(0 if ok else 1)

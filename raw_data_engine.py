@@ -150,7 +150,6 @@ class RawDataIngestion:
             "vedic_snapshot": vedic_snapshot,
             "vedha": vedha,
             "crypto_astro": crypto_astro,
-            "oil_astro": crypto_astro,
             "macro_bias": macro_bias,
             "red_day": red_day,
             "data_quality": {

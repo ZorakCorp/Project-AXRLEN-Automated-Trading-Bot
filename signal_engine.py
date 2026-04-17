@@ -55,7 +55,7 @@ class CryptoVedicBrain(BrainBase):
     name = "Crypto Vedic Regime"
 
     def evaluate(self, context: Dict) -> List[Signal]:
-        c = context.get("crypto_astro") or context.get("oil_astro") or {}
+        c = context.get("crypto_astro") or {}
         snap = context.get("vedic_snapshot") or {}
         vedha = context.get("vedha") or {}
         signals: List[Signal] = []
@@ -104,14 +104,25 @@ class CryptoVedicBrain(BrainBase):
                 )
             )
 
-        if snap.get("latta_active"):
+        # Latta: Mars = volatility / decisive bar (non-directional in aggregate); Saturn = crushing pressure (bearish).
+        if snap.get("mars_latta"):
             signals.append(
                 Signal(
-                    name="Latta kick (Moon on Mars+3 / Saturn+8 nakshatra target)",
+                    name="Mars Latta (Moon on Mars +3 nakshatra target; volatility)",
                     domain="astrology",
-                    strength=0.38,
+                    strength=0.0,
+                    weight=0.0,
+                    tags=frozenset({"latta_mars", "latta_volatility"}),
+                )
+            )
+        if snap.get("saturn_latta"):
+            signals.append(
+                Signal(
+                    name="Saturn Latta (Moon on Saturn +8 nakshatra target; pressure)",
+                    domain="astrology",
+                    strength=-0.38,
                     weight=0.14,
-                    tags=frozenset({"latta_kick"}),
+                    tags=frozenset({"latta_saturn", "latta_kick"}),
                 )
             )
 
@@ -303,6 +314,10 @@ class ProbabilityEngine:
             return 100.0
         if "samasaptaka" in tags:
             return 80.0
+        if "latta_saturn" in tags:
+            return 55.0
+        if "latta_mars" in tags:
+            return 40.0
         if "latta_kick" in tags:
             return 50.0
         if "eclipse_axis" in tags:

@@ -9,3 +9,4 @@ eth-account>=0.11.0
 hyperliquid-python-sdk
 kerykeion
 ecdsa
+pyswisseph>=2.10.3

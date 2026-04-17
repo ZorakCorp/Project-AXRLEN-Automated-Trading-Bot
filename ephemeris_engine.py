@@ -6,6 +6,14 @@ from typing import Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
+try:
+    import swisseph as swe
+
+    _SWISSEPH_LIB = True
+except ImportError:
+    swe = None  # type: ignore
+    _SWISSEPH_LIB = False
+
 NAKSHATRAS: Tuple[str, ...] = (
     "Ashwini",
     "Bharani",
@@ -45,6 +53,16 @@ _DAY_START_LORD: Tuple[str, ...] = ("Moon", "Mars", "Mercury", "Jupiter", "Venus
 class EphemerisEngine:
     def __init__(self):
         self.current_date = datetime.now(timezone.utc)
+        swiss_off = os.getenv("DISABLE_SWISSEPH", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+        self._swiss_available = bool(_SWISSEPH_LIB and not swiss_off)
+        if self._swiss_available:
+            logger.info("Ephemeris backend: Swiss Ephemeris (pyswisseph), Lahiri sidereal.")
+        elif not _SWISSEPH_LIB:
+            logger.warning(
+                "Ephemeris backend: built-in approximation only (install pyswisseph for accurate planets)."
+            )
+        else:
+            logger.info("Ephemeris backend: built-in approximation (DISABLE_SWISSEPH is set).")
 
     @staticmethod
     def _wrap360(deg: float) -> float:
@@ -249,29 +267,111 @@ class EphemerisEngine:
         omega = 125.04452 - 1934.136261 * t + 0.0020708 * t * t + (t**3) / 450000.0
         return EphemerisEngine._wrap360(omega)
 
-    @classmethod
-    def _tropical_longitudes(cls, jd: float) -> Dict[str, float]:
+    def _fallback_tropical_longitudes(self, jd: float) -> Dict[str, float]:
+        """Low-precision Kepler/Schlyter fallback when Swiss Ephemeris is unavailable."""
         longs: Dict[str, float] = {}
-        longs["Sun"] = cls._sun_ecliptic_longitude(jd)
-        longs["Moon"] = cls._moon_ecliptic_longitude(jd)
+        longs["Sun"] = self._sun_ecliptic_longitude(jd)
+        longs["Moon"] = self._moon_ecliptic_longitude(jd)
         for p in ("Mercury", "Venus", "Mars", "Jupiter", "Saturn"):
-            longs[p] = cls._planet_geocentric_longitude(jd, planet=p)
-        node_t = cls._mean_lunar_ascending_node_tropical(jd)
+            longs[p] = self._planet_geocentric_longitude(jd, planet=p)
+        node_t = self._mean_lunar_ascending_node_tropical(jd)
         longs["Rahu"] = node_t
-        longs["Ketu"] = cls._wrap360(node_t + 180.0)
+        longs["Ketu"] = self._wrap360(node_t + 180.0)
         return longs
+
+    def _tropical_longitudes(self, jd: float) -> Dict[str, float]:
+        """Tropical longitudes as a flat map (used by legacy helpers). Prefer Swiss when enabled."""
+        if self._swiss_available:
+            try:
+                bundle = self._swiss_ephemeris_bundle(jd, sidereal=False)
+                return {name: float(data["longitude"]) for name, data in bundle.items()}
+            except Exception as exc:
+                logger.warning("Swiss tropical bundle failed (%s); using fallback longitudes.", exc)
+        return self._fallback_tropical_longitudes(jd)
+
+    def _swiss_ephemeris_bundle(self, jd: float, *, sidereal: bool) -> Dict[str, Dict]:
+        """Swiss Ephemeris geocentric ecliptic positions; tropical or Lahiri sidereal via FLG_SIDEREAL."""
+        if swe is None:
+            raise RuntimeError("pyswisseph is not installed")
+        swe.set_sid_mode(swe.SIDM_LAHIRI, 0, 0)
+        ephe_path = os.getenv("SWISSEPH_EPHE_PATH", "").strip()
+        if ephe_path:
+            swe.set_ephe_path(ephe_path)
+
+        base_flags = swe.FLG_SPEED
+        if sidereal:
+            base_flags |= swe.FLG_SIDEREAL
+
+        bodies = (
+            ("Sun", swe.SUN),
+            ("Moon", swe.MOON),
+            ("Mercury", swe.MERCURY),
+            ("Venus", swe.VENUS),
+            ("Mars", swe.MARS),
+            ("Jupiter", swe.JUPITER),
+            ("Saturn", swe.SATURN),
+        )
+
+        last_err = ""
+        eph_modes = [swe.FLG_SWIEPH]
+        if hasattr(swe, "FLG_MOSEPH"):
+            eph_modes.append(swe.FLG_MOSEPH)
+        for eph_flag in eph_modes:
+            iflag = base_flags | eph_flag
+            positions: Dict[str, Dict] = {}
+            failed = False
+            for name, ipl in bodies:
+                xx, serr = swe.calc_ut(jd, ipl, iflag)
+                if serr:
+                    es = str(serr).strip()
+                    if es:
+                        last_err = es
+                        failed = True
+                        break
+                lon = float(xx[0]) % 360.0
+                positions[name] = {
+                    "longitude": lon,
+                    "latitude": float(xx[1]),
+                    "sign": self._sign_from_longitude(lon),
+                    "retrograde": float(xx[3]) < 0.0,
+                }
+            if failed:
+                continue
+
+            xx, serr = swe.calc_ut(jd, swe.MEAN_NODE, iflag)
+            if serr and str(serr).strip():
+                last_err = str(serr).strip()
+                continue
+            rlon = float(xx[0]) % 360.0
+            rretro = float(xx[3]) < 0.0
+            positions["Rahu"] = {
+                "longitude": rlon,
+                "latitude": float(xx[1]),
+                "sign": self._sign_from_longitude(rlon),
+                "retrograde": rretro,
+            }
+            klon = self._wrap360(rlon + 180.0)
+            positions["Ketu"] = {
+                "longitude": klon,
+                "latitude": 0.0,
+                "sign": self._sign_from_longitude(klon),
+                "retrograde": rretro,
+            }
+            return positions
+
+        raise RuntimeError(last_err or "Swiss Ephemeris calc_ut failed for all ephemeris modes")
 
     def get_planet_positions(self) -> Dict[str, Dict]:
         """
-        Compute time-varying planetary longitudes/signs (tropical ecliptic).
-
-        Notes:
-        - Lightweight orbital approximations (no Swiss Ephemeris dependency).
-        - For Vedic trading inputs use ``get_vedic_snapshot()`` (sidereal Lahiri + nodes + luni-solar calendar).
+        Geocentric tropical ecliptic positions. Uses Swiss Ephemeris when ``pyswisseph`` is installed.
         """
         jd = self._julian_day(self.current_date)
-        longs = self._tropical_longitudes(jd)
-
+        if self._swiss_available:
+            try:
+                return self._swiss_ephemeris_bundle(jd, sidereal=False)
+            except Exception as exc:
+                logger.warning("Swiss tropical failed (%s); using built-in fallback.", exc)
+        longs = self._fallback_tropical_longitudes(jd)
         positions: Dict[str, Dict] = {}
         for name, lon in longs.items():
             positions[name] = {
@@ -283,10 +383,15 @@ class EphemerisEngine:
         return positions
 
     def get_sidereal_positions(self) -> Dict[str, Dict]:
-        """Geocentric sidereal (Lahiri) longitudes for classical planets + mean nodes."""
+        """Geocentric sidereal (Lahiri) longitudes; Swiss-first, then manual ayanamsa on fallback tropical."""
         jd = self._julian_day(self.current_date)
+        if self._swiss_available:
+            try:
+                return self._swiss_ephemeris_bundle(jd, sidereal=True)
+            except Exception as exc:
+                logger.warning("Swiss sidereal failed (%s); using Lahiri subtraction on fallback tropical.", exc)
         ayan = self._lahiri_ayanamsa(jd)
-        trop = self._tropical_longitudes(jd)
+        trop = self._fallback_tropical_longitudes(jd)
         positions: Dict[str, Dict] = {}
         for name, lon in trop.items():
             sid = self._wrap360(float(lon) - ayan)
@@ -355,9 +460,13 @@ class EphemerisEngine:
         saturn_hora = hora_lord == "Saturn"
         favorable_hora = hora_lord in {"Jupiter", "Mars"}
 
-        mars_saturn_opposition = (
-            abs((float(sid["Mars"]["longitude"]) - float(sid["Saturn"]["longitude"]) + 180.0) % 360.0 - 180.0) < 8.0
-        )
+        m_lon = float(sid["Mars"]["longitude"])
+        s_lon = float(sid["Saturn"]["longitude"])
+        delta = (m_lon - s_lon + 540.0) % 360.0 - 180.0
+        samasaptaka_orb = float(os.getenv("SAMASAPTAKA_ORB_DEG", "3.0"))
+        samasaptaka_orb = max(0.25, min(8.0, samasaptaka_orb))
+        # Mars–Saturn opposition only (not conjunction); |Δ| near 180° within orb.
+        mars_saturn_opposition = abs(abs(delta) - 180.0) < samasaptaka_orb
 
         return {
             "jd": jd,
@@ -375,6 +484,7 @@ class EphemerisEngine:
             "entry_blocked_tithi": blocked_tithi,
             "entry_favorable_hora": favorable_hora,
             "mars_saturn_samasaptaka_approx": mars_saturn_opposition,
+            "samasaptaka_orb_deg": samasaptaka_orb,
         }
 
     def calculate_vedha(self) -> Dict[str, bool]:
