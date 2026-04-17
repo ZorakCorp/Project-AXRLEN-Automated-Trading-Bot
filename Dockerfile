@@ -10,4 +10,5 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
+# Optional: add Swiss Ephemeris .se1 files under /ephe and set SWISSEPH_EPHE_PATH=/ephe for DE421-class precision.
 CMD ["python", "main.py", "run"]

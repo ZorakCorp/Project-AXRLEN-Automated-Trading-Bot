@@ -18,10 +18,13 @@ class LeaderProfile:
 
 class LeaderDashaEngine:
     """
-    Optional natal Vimshottari-style context for named profiles.
+    Optional natal Vimshottari context for named profiles (``vimshottari.vimshottari_state``).
 
-    Default is empty for the ETH bot path (no synthetic “OPEC chair” dasha).
-    Pass real ``LeaderProfile`` rows if you want this layer active.
+    Uses Moon sidereal longitude at birth (UT) from ``EphemerisEngine`` and elapsed JD to now;
+    no hash placeholders. Supply ``birth_date`` as ``YYYY-MM-DD`` (and optional ``HH:MM`` UTC in
+    ``birth_time``) for meaningful mahadasha / antardasha labels.
+
+    Default ``leaders`` list is empty on the ETH path so this layer stays inert unless configured.
     """
 
     def __init__(self, leaders: Optional[List[LeaderProfile]] = None):

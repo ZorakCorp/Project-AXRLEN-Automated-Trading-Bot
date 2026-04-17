@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -308,16 +309,33 @@ class HistoricalCrashBrain(BrainBase):
 
 
 class ProbabilityEngine:
-    def __init__(self):
-        self.domain_weights = {
-            "astrology": 0.38,
-            "technical": 0.22,
-            "dark_pool": 0.10,
-            "ai": 0.08,
-            "sentiment": 0.08,
-            "historical": 0.06,
-            "leadership": 0.06,
-        }
+    _DEFAULT_DOMAIN_WEIGHTS: Dict[str, float] = {
+        "astrology": 0.38,
+        "technical": 0.22,
+        "dark_pool": 0.10,
+        "ai": 0.08,
+        "sentiment": 0.08,
+        "historical": 0.06,
+        "leadership": 0.06,
+    }
+
+    def __init__(self) -> None:
+        merged = dict(self._DEFAULT_DOMAIN_WEIGHTS)
+        raw = os.getenv("DOMAIN_WEIGHTS_JSON", "").strip()
+        if raw:
+            try:
+                override = json.loads(raw)
+                if not isinstance(override, dict):
+                    raise TypeError("expected JSON object")
+                for key, val in override.items():
+                    ks = str(key)
+                    if ks not in merged:
+                        continue
+                    merged[ks] = float(val)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                logger.warning("DOMAIN_WEIGHTS_JSON invalid (%s); using defaults.", exc)
+                merged = dict(self._DEFAULT_DOMAIN_WEIGHTS)
+        self.domain_weights = merged
 
     @staticmethod
     def temporal_multiplier(signal: Signal) -> float:

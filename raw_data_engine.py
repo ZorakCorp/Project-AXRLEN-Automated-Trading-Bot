@@ -120,10 +120,11 @@ class RawDataIngestion:
         logger.debug("Running OpenAI scout for historical precedents")
         return self.ai.flash_scout(query, dataset_context)
 
-    def risk_flags(self) -> Dict[str, Any]:
+    def risk_flags(self, *, refresh_eclipse_anchor: bool = True) -> Dict[str, Any]:
         """Vedic exit / eclipse triggers without OpenAI (safe for monitor loop)."""
         jd = EphemerisEngine._julian_day(self.ephemeris.current_date)
-        refresh_eclipse_anchor_if_needed(jd)
+        if refresh_eclipse_anchor:
+            refresh_eclipse_anchor_if_needed(jd)
         vedic_snapshot = self.ephemeris.get_vedic_snapshot()
         sid = vedic_snapshot.get("positions_sidereal") or {}
         vedha = self.ephemeris.calculate_vedha()
@@ -139,8 +140,18 @@ class RawDataIngestion:
             "eclipse_degree_detail": ecl_detail,
         }
 
-    def build_context_light(self, symbol: str) -> Dict[str, Any]:
-        """Ephemeris + deterministic macro + risk flags; no OpenAI (for backtests / fast replay)."""
+    def build_context_light(
+        self,
+        symbol: str,
+        *,
+        slim_feeds: bool = False,
+        refresh_eclipse_anchor: bool = True,
+    ) -> Dict[str, Any]:
+        """Ephemeris + deterministic macro + risk flags; no OpenAI (for backtests / fast replay).
+
+        ``slim_feeds=True`` skips placeholder HTTP-style dict merges (faster backtests).
+        ``refresh_eclipse_anchor=False`` skips Swiss eclipse search (caller may prime once).
+        """
         astro_positions = self.ephemeris.get_planet_positions()
         vedic_snapshot = self.ephemeris.get_vedic_snapshot()
         vedha = self.ephemeris.calculate_vedha()
@@ -150,13 +161,32 @@ class RawDataIngestion:
             vedha=vedha,
             vedic_snapshot=vedic_snapshot,
         )
-        rf = self.risk_flags()
+        rf = self.risk_flags(refresh_eclipse_anchor=refresh_eclipse_anchor)
+        if slim_feeds:
+            neutral_sent = {
+                "direction": "neutral",
+                "magnitude": 0.0,
+                "category": "other",
+                "reason": "slim_feeds (backtest)",
+            }
+            feed_block = {
+                "price_feed": {"symbol": symbol, "source": "slim", "data": []},
+                "crypto_news": {"headline": "", "body": ""},
+                "crypto_sentiment": neutral_sent,
+                "opec_sentiment": neutral_sent,
+                "geopolitics": {"conflict_signals": []},
+                "dark_pool": {"institutional_flow": []},
+            }
+        else:
+            feed_block = {
+                **self.fetch_price_feed(symbol),
+                **self.fetch_crypto_news_sentiment(),
+                **self.fetch_geopolitical_signals(),
+                **self.fetch_dark_pool_data(),
+            }
         return {
             "symbol": symbol,
-            **self.fetch_price_feed(symbol),
-            **self.fetch_crypto_news_sentiment(),
-            **self.fetch_geopolitical_signals(),
-            **self.fetch_dark_pool_data(),
+            **feed_block,
             "leader_dasha_contexts": [],
             "astro_positions": astro_positions,
             "vedic_snapshot": vedic_snapshot,

@@ -194,10 +194,21 @@ Discord commands + reports:
 - `DISCORD_DAILY_REPORT_HOUR_LOCAL` (default `20`)
 
 Stop loss tuning:
-- `STOP_RECENT_LOOKBACK_CANDLES` (default `1`, recommended `18` for your setup)
+- `STOP_RECENT_LOOKBACK_CANDLES` (default `24` when pivots miss; rolling low/high fallback window)
 - `STOP_RECENT_BUFFER_PCT` (default `0.00`)
-- `MIN_STOP_DISTANCE_PCT` (default `0.15`)
-- `MIN_STOP_DISTANCE_USD` (default `1.50`)
+- `MIN_STOP_DISTANCE_PCT` / `MIN_STOP_DISTANCE_USD` (see `.env.example` for current defaults)
+
+Backtest (`python backtest_replay.py --csv ...`):
+- Use `--simulate` for TP/SL + signal-flip PnL, optional Pancha/eclipse long exits (same flags as live), win rate, max drawdown, and a Sharpe-style estimate.
+- Eclipse almanac is primed once per run then skipped per bar via `SKIP_ECLIPSE_ALMANAC_REFRESH` (set automatically by the harness).
+- Use `--no-vedic-exits` to disable long force-exits from `risk_flags` during simulation.
+
+Signal aggregation tuning:
+- `DOMAIN_WEIGHTS_JSON` — optional JSON object overriding default domain weights for `ProbabilityEngine` (keys: `astrology`, `technical`, `dark_pool`, `ai`, `sentiment`, `historical`, `leadership`). Use after backtests to bias domains without code changes.
+
+Swiss Ephemeris data files (optional, higher precision than Moshier fallback):
+- Download planetary ephemeris `.se1` files from [Swiss Ephemeris](https://www.astro.com/swisseph/swephinfo_e.htm) (e.g. `sepl_18.se1` for your era).
+- Put them in a directory and set `SWISSEPH_EPHE_PATH` to that path (Railway: mount a volume or bake into the image). Without files, `pyswisseph` still returns valid positions via the built-in fallback.
 
 ## Notes
 

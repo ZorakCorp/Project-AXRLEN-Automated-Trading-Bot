@@ -95,14 +95,22 @@ def _find_last_solar_eclipse_sidereal(jd_until: float) -> Optional[Tuple[float, 
 
 
 def refresh_eclipse_anchor_if_needed(jd_now: float) -> Dict[str, Any]:
+    """
+    Refresh persisted eclipse anchor at most every ECLIPSE_ALMANAC_REFRESH_DAYS (wall-clock JD delta).
+
+    A failed Swiss lookup leaves ``last_solar_eclipse_sidereal_lon`` null but still updates
+    ``eclipse_lookup_jd`` so we do **not** re-run ``sol_eclipse_when_glob`` on every bar (that was
+    the backtest hang when the almanac file could not be written or lon stayed None).
+    """
+    if os.getenv("SKIP_ECLIPSE_ALMANAC_REFRESH", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        return load_almanac()
+
     state = load_almanac()
     refresh_days = float(os.getenv("ECLIPSE_ALMANAC_REFRESH_DAYS", "30"))
     last_lookup = float(state.get("eclipse_lookup_jd") or 0.0)
-    need = state.get("last_solar_eclipse_sidereal_lon") is None
-    if last_lookup > 0:
-        need = need or (jd_now - last_lookup) > refresh_days
+    need_refresh = last_lookup <= 0.0 or (jd_now - last_lookup) > refresh_days
 
-    if not need:
+    if not need_refresh:
         return state
 
     found = _find_last_solar_eclipse_sidereal(jd_now)
