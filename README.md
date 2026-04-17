@@ -205,6 +205,7 @@ Backtest (`python backtest_replay.py --csv ...`):
 
 Signal aggregation tuning:
 - `DOMAIN_WEIGHTS_JSON` — optional JSON object overriding default domain weights for `ProbabilityEngine` (keys: `astrology`, `technical`, `dark_pool`, `ai`, `sentiment`, `historical`, `leadership`). Use after backtests to bias domains without code changes.
+- `python tune_domain_weights.py --csv your.csv --max-rows 8000` — small grid over astrology vs technical (holding their sum fixed at 0.60); prints copy-pastable JSON for the best objective (`--objective return` or `sharpe`).
 
 Swiss Ephemeris data files (optional, higher precision than Moshier fallback):
 - Download planetary ephemeris `.se1` files from [Swiss Ephemeris](https://www.astro.com/swisseph/swephinfo_e.htm) (e.g. `sepl_18.se1` for your era).

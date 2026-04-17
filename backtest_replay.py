@@ -57,11 +57,11 @@ def _exit_long(
     tp: float,
     sl: float,
 ) -> Tuple[Optional[str], Optional[float]]:
-    if low <= sl and high >= tp:
+    if low <= sl and h >= tp:
         return "sl", sl
     if low <= sl:
         return "sl", sl
-    if high >= tp:
+    if h >= tp:
         return "tp", tp
     if classification != "LONG":
         return "signal", c
@@ -85,6 +85,157 @@ def _exit_short(
     if classification != "SHORT":
         return "signal", c
     return None, None
+
+
+def run_simulation(
+    df: pd.DataFrame,
+    *,
+    symbol: str = "ETH",
+    warmup: int = 120,
+    initial_capital: float = 100_000.0,
+    no_vedic_exits: bool = False,
+    domain_weights_json: Optional[str] = None,
+    quiet: bool = True,
+) -> Dict[str, Any]:
+    """
+    Run one deterministic backtest simulation over ``df`` (OHLCV). Optionally override
+    ``DOMAIN_WEIGHTS_JSON`` for this process (merged in ``ProbabilityEngine`` each bar).
+
+    Returns metrics including ``domain_weights_json`` echo and optional ``equity_curve`` keys.
+    """
+    ingest = RawDataIngestion()
+    tp_frac = float(DEFAULT_TAKE_PROFIT_PCT) / 100.0
+    sl_frac = float(DEFAULT_STOP_LOSS_PCT) / 100.0
+
+    from eclipse_almanac import refresh_eclipse_anchor_if_needed
+
+    prev_weights = os.environ.pop("DOMAIN_WEIGHTS_JSON", None)
+    prev_skip_saved = os.environ.pop("SKIP_ECLIPSE_ALMANAC_REFRESH", None)
+
+    if domain_weights_json:
+        os.environ["DOMAIN_WEIGHTS_JSON"] = domain_weights_json
+
+    last_row = df.iloc[-1]
+    ingest.ephemeris.current_date = _row_ts(last_row).to_pydatetime()
+    refresh_eclipse_anchor_if_needed(EphemerisEngine._julian_day(ingest.ephemeris.current_date))
+    os.environ["SKIP_ECLIPSE_ALMANAC_REFRESH"] = "1"
+
+    equity_curve: List[float] = []
+    ts_curve: List[pd.Timestamp] = []
+    trades: List[Dict[str, Any]] = []
+    position: Optional[Dict[str, Any]] = None
+    capital = float(initial_capital)
+    wins = 0
+    peak_eq = float(initial_capital)
+    max_dd = 0.0
+
+    try:
+        wu = max(22, int(warmup))
+        for i in range(len(df)):
+            row = df.iloc[i]
+            rts = _row_ts(row)
+            ingest.ephemeris.current_date = rts.to_pydatetime()
+            ctx = ingest.build_context_light(symbol, slim_feeds=True, refresh_eclipse_anchor=False)
+            sub = df.iloc[: i + 1].tail(wu)
+            if len(sub) < 22:
+                continue
+            ctx["price_history"] = sub
+            out = run_probability(ctx)
+            score = float(out["score"])
+            classification = str(out["classification"])
+
+            hi = float(row["high"])
+            low = float(row["low"])
+            c = float(row["close"])
+
+            if position is not None:
+                tp = float(position["tp"])
+                sl = float(position["sl"])
+                reason: Optional[str] = None
+                exit_px: Optional[float] = None
+                if not no_vedic_exits and position.get("side") == "long":
+                    rf = ctx.get("risk_flags") or {}
+                    if rf.get("pancha_vedha_exit_long"):
+                        reason, exit_px = "pancha", c
+                    elif rf.get("eclipse_degree_trigger"):
+                        reason, exit_px = "eclipse_degree", c
+                if reason is None and position["side"] == "long":
+                    reason, exit_px = _exit_long(hi, low, c, classification, tp, sl)
+                elif reason is None:
+                    reason, exit_px = _exit_short(hi, low, c, classification, tp, sl)
+                if reason is not None and exit_px is not None:
+                    entry = float(position["entry"])
+                    side = position["side"]
+                    if side == "long":
+                        pnl_pct = (float(exit_px) - entry) / entry
+                    else:
+                        pnl_pct = (entry - float(exit_px)) / entry
+                    capital *= 1.0 + pnl_pct
+                    trades.append(
+                        {
+                            "exit_time": rts.isoformat(),
+                            "side": side,
+                            "reason": reason,
+                            "entry": entry,
+                            "exit": float(exit_px),
+                            "pnl_pct": round(pnl_pct * 100.0, 4),
+                            "equity_after": round(capital, 2),
+                        }
+                    )
+                    if pnl_pct > 0:
+                        wins += 1
+                    position = None
+
+            if position is None:
+                if classification == "LONG":
+                    position = {
+                        "side": "long",
+                        "entry": c,
+                        "tp": c * (1.0 + tp_frac),
+                        "sl": c * (1.0 - sl_frac),
+                    }
+                elif classification == "SHORT":
+                    position = {
+                        "side": "short",
+                        "entry": c,
+                        "tp": c * (1.0 - tp_frac),
+                        "sl": c * (1.0 + sl_frac),
+                    }
+
+            eq = _mark_equity(capital, position, c)
+            equity_curve.append(eq)
+            ts_curve.append(rts)
+            peak_eq = max(peak_eq, eq)
+            max_dd = max(max_dd, (peak_eq - eq) / peak_eq if peak_eq > 0 else 0.0)
+
+            if not quiet:
+                print(f"{rts.isoformat()} score={score:.2f} class={classification}")
+
+        n = len(trades)
+        win_rate = (wins / n * 100.0) if n else 0.0
+        total_ret = (capital / float(initial_capital) - 1.0) * 100.0
+        sharpe = _sharpe_ratio(equity_curve, ts_curve)
+        return {
+            "warmup": wu,
+            "bars": len(df),
+            "trades": n,
+            "win_rate_pct": win_rate,
+            "initial_capital": initial_capital,
+            "final_equity": capital,
+            "total_return_pct": total_ret,
+            "max_drawdown_pct": max_dd * 100.0,
+            "sharpe_est": sharpe,
+            "vedic_long_exits": not no_vedic_exits,
+            "domain_weights_json": domain_weights_json or "",
+        }
+    finally:
+        os.environ.pop("SKIP_ECLIPSE_ALMANAC_REFRESH", None)
+        if prev_skip_saved is not None:
+            os.environ["SKIP_ECLIPSE_ALMANAC_REFRESH"] = prev_skip_saved
+        if prev_weights is not None:
+            os.environ["DOMAIN_WEIGHTS_JSON"] = prev_weights
+        elif domain_weights_json:
+            os.environ.pop("DOMAIN_WEIGHTS_JSON", None)
 
 
 def _sharpe_ratio(equity_series: List[float], timestamps: List[pd.Timestamp]) -> float:
@@ -127,11 +278,30 @@ def main() -> None:
     args = parser.parse_args()
 
     df = load_csv(args.csv).sort_values("timestamp").tail(int(args.max_rows)).reset_index(drop=True)
+
+    if args.simulate:
+        metrics = run_simulation(
+            df,
+            symbol=args.symbol,
+            warmup=args.warmup,
+            initial_capital=args.initial_capital,
+            no_vedic_exits=args.no_vedic_exits,
+            quiet=args.no_per_bar,
+        )
+        print("--- backtest summary ---")
+        print(
+            f"bars={metrics['bars']} warmup={metrics['warmup']} trades={metrics['trades']} "
+            f"win_rate={metrics['win_rate_pct']:.2f}% "
+            f"vedic_long_exits={'off' if args.no_vedic_exits else 'on'}"
+        )
+        print(
+            f"initial_capital={metrics['initial_capital']:.2f} final_equity={metrics['final_equity']:.2f} "
+            f"total_return_pct={metrics['total_return_pct']:.4f}"
+        )
+        print(f"max_drawdown_pct={metrics['max_drawdown_pct']:.4f} sharpe_est={metrics['sharpe_est']:.4f}")
+        return
+
     ingest = RawDataIngestion()
-
-    tp_frac = float(DEFAULT_TAKE_PROFIT_PCT) / 100.0
-    sl_frac = float(DEFAULT_STOP_LOSS_PCT) / 100.0
-
     from eclipse_almanac import refresh_eclipse_anchor_if_needed
 
     last_row = df.iloc[-1]
@@ -139,15 +309,6 @@ def main() -> None:
     refresh_eclipse_anchor_if_needed(EphemerisEngine._julian_day(ingest.ephemeris.current_date))
     prev_skip = os.environ.get("SKIP_ECLIPSE_ALMANAC_REFRESH")
     os.environ["SKIP_ECLIPSE_ALMANAC_REFRESH"] = "1"
-
-    equity_curve: List[float] = []
-    ts_curve: List[pd.Timestamp] = []
-    trades: List[Dict[str, Any]] = []
-    position: Optional[Dict[str, Any]] = None
-    capital = float(args.initial_capital)
-    wins = 0
-    peak_eq = float(args.initial_capital)
-    max_dd = 0.0
 
     try:
         warmup = max(22, int(args.warmup))
@@ -164,89 +325,8 @@ def main() -> None:
             score = float(out["score"])
             classification = str(out["classification"])
 
-            h = float(row["high"])
-            low = float(row["low"])
-            c = float(row["close"])
-
-            if args.simulate:
-                if position is not None:
-                    tp = float(position["tp"])
-                    sl = float(position["sl"])
-                    reason: Optional[str] = None
-                    exit_px: Optional[float] = None
-                    if not args.no_vedic_exits and position.get("side") == "long":
-                        rf = ctx.get("risk_flags") or {}
-                        if rf.get("pancha_vedha_exit_long"):
-                            reason, exit_px = "pancha", c
-                        elif rf.get("eclipse_degree_trigger"):
-                            reason, exit_px = "eclipse_degree", c
-                    if reason is None and position["side"] == "long":
-                        reason, exit_px = _exit_long(h, low, c, classification, tp, sl)
-                    elif reason is None:
-                        reason, exit_px = _exit_short(h, low, c, classification, tp, sl)
-                    if reason is not None and exit_px is not None:
-                        entry = float(position["entry"])
-                        side = position["side"]
-                        if side == "long":
-                            pnl_pct = (float(exit_px) - entry) / entry
-                        else:
-                            pnl_pct = (entry - float(exit_px)) / entry
-                        capital *= 1.0 + pnl_pct
-                        trades.append(
-                            {
-                                "exit_time": rts.isoformat(),
-                                "side": side,
-                                "reason": reason,
-                                "entry": entry,
-                                "exit": float(exit_px),
-                                "pnl_pct": round(pnl_pct * 100.0, 4),
-                                "equity_after": round(capital, 2),
-                            }
-                        )
-                        if pnl_pct > 0:
-                            wins += 1
-                        position = None
-
-                if position is None:
-                    if classification == "LONG":
-                        position = {
-                            "side": "long",
-                            "entry": c,
-                            "tp": c * (1.0 + tp_frac),
-                            "sl": c * (1.0 - sl_frac),
-                        }
-                    elif classification == "SHORT":
-                        position = {
-                            "side": "short",
-                            "entry": c,
-                            "tp": c * (1.0 - tp_frac),
-                            "sl": c * (1.0 + sl_frac),
-                        }
-
-            eq = _mark_equity(capital, position, c)
-            equity_curve.append(eq)
-            ts_curve.append(rts)
-            peak_eq = max(peak_eq, eq)
-            max_dd = max(max_dd, (peak_eq - eq) / peak_eq if peak_eq > 0 else 0.0)
-
             if not args.no_per_bar:
                 print(f"{rts.isoformat()} score={score:.2f} class={classification}")
-
-        if args.simulate:
-            n = len(trades)
-            win_rate = (wins / n * 100.0) if n else 0.0
-            total_ret = (capital / float(args.initial_capital) - 1.0) * 100.0
-            sharpe = _sharpe_ratio(equity_curve, ts_curve)
-            print("--- backtest summary ---")
-            print(
-                f"bars={len(df)} warmup={warmup} trades={n} win_rate={win_rate:.2f}% "
-                f"vedic_long_exits={'off' if args.no_vedic_exits else 'on'}"
-            )
-            print(f"initial_capital={args.initial_capital:.2f} final_equity={capital:.2f} total_return_pct={total_ret:.4f}")
-            print(f"max_drawdown_pct={max_dd * 100.0:.4f} sharpe_est={sharpe:.4f}")
-            if n and n <= 30:
-                for t in trades:
-                    print(t)
     finally:
         if prev_skip is None:
             os.environ.pop("SKIP_ECLIPSE_ALMANAC_REFRESH", None)
